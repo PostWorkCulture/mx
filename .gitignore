@@ -1,0 +1,18 @@
+# --- heavy source assets: kept locally, not in the repo ---
+*.blend
+*.blend1
+*.mp4
+/Red Monster Truck.glb
+/Dirt Bike.glb
+/Dirt Bike 2.glb
+/red_monster_truck_game.glb
+/red_monster_truck_white_rims.jpg
+/concepts/
+/Claude outputs/
+
+# --- tooling / OS ---
+node_modules/
+.vscode/
+.DS_Store
+Thumbs.db
+desktop.ini

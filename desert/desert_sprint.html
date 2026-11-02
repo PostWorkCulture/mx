@@ -1,0 +1,362 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MX – Desert Sprint</title>
+<style>
+  :root { --ink: #f6efe4; --dim: rgba(246, 239, 228, 0.62); --bg: rgba(20, 14, 10, 0.58); --accent: #ff7a1a; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #1a120c; color: var(--ink); font: 14px/1.35 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  canvas { display: block; }
+  .hud { position: fixed; pointer-events: none; text-shadow: 0 1px 3px rgba(0,0,0,0.6); }
+  #tl { top: 16px; left: 18px; }
+  #tl .time { font: 800 38px/1 ui-monospace, "SF Mono", Consolas, monospace; letter-spacing: 0.5px; }
+  #tl .row { margin-top: 6px; color: var(--dim); font-weight: 600; }
+  #tl .delta.good { color: #8fe08a; } #tl .delta.bad { color: #ff8a7a; }
+  #tr { top: 16px; right: 18px; text-align: right; }
+  #tr .pos { font: 900 44px/1 system-ui, sans-serif; }
+  #tr .pos small { font-size: 20px; color: var(--dim); }
+  #mini { margin-top: 8px; background: var(--bg); border-radius: 10px; }
+  #br { bottom: 18px; right: 22px; text-align: right; }
+  #br .spd { font: 900 54px/1 system-ui, sans-serif; } #br .spd small { font-size: 16px; color: var(--dim); margin-left: 4px; }
+  #br .surf { color: var(--dim); font-weight: 600; margin-top: 2px; }
+  #bl { bottom: 18px; left: 18px; width: min(46vw, 520px); }
+  #bar { position: relative; height: 8px; background: rgba(255,255,255,0.18); border-radius: 4px; }
+  #bar .cp { position: absolute; top: -3px; width: 2px; height: 14px; background: rgba(255,255,255,0.45); }
+  #bar .dot { position: absolute; top: -4px; width: 16px; height: 16px; margin-left: -8px; border-radius: 50%; border: 2px solid #111; }
+  #bl .keys { margin-top: 10px; color: var(--dim); font-size: 12px; }
+  #center { inset: 0; display: grid; place-items: center; }
+  #big { font: 900 min(18vw, 150px)/1 system-ui, sans-serif; letter-spacing: 2px; }
+  #banner { position: fixed; top: 22%; left: 50%; transform: translateX(-50%); padding: 8px 18px; border-radius: 8px; font: 800 22px system-ui, sans-serif; background: rgba(200, 40, 30, 0.85); display: none; }
+  #toast { position: fixed; top: 14%; left: 50%; transform: translateX(-50%); font: 800 20px system-ui, sans-serif; opacity: 0; transition: opacity 0.3s; }
+  .panel { position: fixed; inset: 0; display: grid; place-items: center; background: radial-gradient(ellipse at center, rgba(30,18,10,0.55), rgba(10,6,3,0.85)); z-index: 5; }
+  .card { width: min(92vw, 880px); background: rgba(28, 19, 13, 0.92); border: 1px solid rgba(255,255,255,0.08); border-radius: 16px; padding: 22px 24px; box-shadow: 0 20px 60px rgba(0,0,0,0.5); }
+  h1 { margin: 0 0 4px; font: 900 30px system-ui, sans-serif; letter-spacing: 0.5px; } h1 span { color: var(--accent); }
+  .sub { color: var(--dim); margin-bottom: 16px; }
+  .routes { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px; }
+  .route { text-align: left; background: rgba(255,255,255,0.04); border: 2px solid transparent; border-radius: 12px; padding: 14px; color: var(--ink); cursor: pointer; font: inherit; }
+  .route:hover, .route.sel { border-color: var(--c, var(--accent)); background: rgba(255,255,255,0.07); }
+  .route b { display: block; font-size: 17px; } .route .m { color: var(--dim); font-size: 12px; margin: 4px 0 8px; } .route p { margin: 0; font-size: 13px; color: rgba(246,239,228,0.85); }
+  .opts { display: flex; gap: 18px; align-items: center; flex-wrap: wrap; margin-top: 16px; }
+  .opts label { color: var(--dim); } select, button.go { font: inherit; }
+  select { background: #2b1f16; color: var(--ink); border: 1px solid rgba(255,255,255,0.15); border-radius: 8px; padding: 6px 8px; }
+  button.go { margin-left: auto; background: var(--accent); color: #1a0f07; border: 0; border-radius: 10px; padding: 11px 22px; font-weight: 800; font-size: 16px; cursor: pointer; }
+  .help { margin-top: 14px; color: var(--dim); font-size: 12px; }
+  #loading { position: fixed; inset: 0; display: grid; place-items: center; z-index: 6; background: #1a120c; }
+  #loading .b { width: 260px; height: 6px; background: rgba(255,255,255,0.15); border-radius: 3px; overflow: hidden; margin-top: 10px; }
+  #loading .b i { display: block; height: 100%; width: 0; background: var(--accent); }
+  table.res { width: 100%; border-collapse: collapse; margin: 10px 0 4px; } table.res td { padding: 5px 4px; border-bottom: 1px solid rgba(255,255,255,0.07); } table.res td:last-child { text-align: right; font-family: ui-monospace, Consolas, monospace; }
+  .medal { font-weight: 900; font-size: 20px; }
+  @media (max-width: 640px) { #tl .time { font-size: 28px; } #br .spd { font-size: 38px; } #bl { width: 60vw; } }
+</style>
+<script type="importmap">
+{ "imports": { "three": "https://unpkg.com/three@0.170.0/build/three.module.js", "three/addons/": "https://unpkg.com/three@0.170.0/examples/jsm/" } }
+</script>
+</head>
+<body>
+<div id="loading"><div style="text-align:center"><div style="font-weight:800;font-size:18px">MX · building the desert…</div><div class="b"><i id="lbar"></i></div><div id="lmsg" style="margin-top:8px;color:var(--dim);font-size:12px"></div></div></div>
+
+<div class="hud" id="tl"><div class="time" id="time">0:00.00</div><div class="row">CP <span id="cp">0/0</span> · <span class="delta" id="delta"></span></div><div class="row" id="best"></div></div>
+<div class="hud" id="tr"><div class="pos" id="pos">1<small>/1</small></div><canvas id="mini" width="220" height="150"></canvas></div>
+<div class="hud" id="br"><div class="spd"><span id="spd">0</span><small>km/h</small></div><div class="surf" id="surf"></div></div>
+<div class="hud" id="bl"><div id="bar"></div><div class="keys">W/↑ throttle · S/↓ brake · A/D steer · R reset to course · C camera · Esc menu · gamepad OK</div></div>
+<div class="hud" id="center"><div id="big"></div></div>
+<div class="hud" id="banner"></div>
+<div class="hud" id="toast"></div>
+
+<div class="panel" id="menu" style="display:none"><div class="card">
+  <h1>MX <span>Desert Sprint</span></h1>
+  <div class="sub">Point-to-point races across the desert. Pick a route.</div>
+  <div class="routes" id="routes"></div>
+  <div class="opts">
+    <label>Opponents <select id="opp"><option>0</option><option>1</option><option selected>2</option><option>3</option></select></label>
+    <label>Truck <select id="truck"><option value="lime">Lime / black</option><option value="stealth">Stealth / gold</option></select></label>
+    <label>Sun <select id="sun"><option value="21">Late afternoon</option><option value="9">Golden hour</option><option value="48">Midday</option></select></label>
+    <button class="go" id="go">Race ▸</button>
+  </div>
+  <div class="help">Soft sand drags and slides – the graded track is fastest. Hit every checkpoint arch. Wind blows west → east, so dunes launch you when you're heading east.</div>
+</div></div>
+
+<div class="panel" id="results" style="display:none"><div class="card" style="max-width:520px">
+  <h1 id="rtitle">Finished</h1><div class="sub" id="rsub"></div>
+  <table class="res" id="rtable"></table>
+  <div class="opts"><button class="go" id="again" style="margin-left:0">Race again</button><button class="go" id="tomenu" style="background:#3a2a1e;color:var(--ink)">Routes</button></div>
+</div></div>
+
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { TruckWorld } from '../monster_truck/MonsterTruckSim.js';
+import { MonsterTruckRig } from '../monster_truck/MonsterTruckRig.js';
+import { SandFX } from '../monster_truck/SandFX.js';
+import { SPRINT_ROUTES, BUTTES } from './routes.js';
+import { DesertMap } from './DesertMap.js';
+import { SandTracks } from './SandTracks.js';
+import { WindSand } from './WindSand.js';
+import { SprintRace, SprintAI } from './SprintRace.js';
+
+const $ = (id) => document.getElementById(id);
+const params = new URLSearchParams(location.search);
+const store = { get(k) { try { return JSON.parse(localStorage.getItem('mx.' + k)); } catch { return null; } }, set(k, v) { try { localStorage.setItem('mx.' + k, JSON.stringify(v)); } catch {} } };
+
+// ---------------------------------------------------------------- renderer / scene
+const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance', preserveDrawingBuffer: params.has('capture') });
+renderer.setPixelRatio(Math.min(devicePixelRatio, params.has('capture') ? 1 : 1.5));
+renderer.setSize(innerWidth, innerHeight);
+document.body.prepend(renderer.domElement);
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(62, innerWidth / innerHeight, 0.3, 14000);
+addEventListener('resize', () => { renderer.setSize(innerWidth, innerHeight); camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); });
+
+const sunElev = +(params.get('sun') || store.get('sun') || 21);
+const map = new DesertMap({ scene, renderer, terrainOpts: { routes: SPRINT_ROUTES, buttes: BUTTES }, sunElevation: sunElev });
+const terrain = map.terrain;
+const world = new TruckWorld({ groundHeight: terrain.height, surface: terrain.surface });
+const tracks = new SandTracks(scene, { groundHeight: terrain.height, sunDir: map.sunDir });
+const windSand = new WindSand(scene, { terrain, wind: terrain.wind });
+const sand = new SandFX(scene, { groundHeight: terrain.height, wind: new THREE.Vector3(terrain.wind[0] * 2, 0, terrain.wind[1] * 2) });
+for (const r of terrain.routes) map.addRouteDressing(r, new SprintRace(terrain, r.id).checkpoints);
+map.addScatter();
+for (const c of map.colliders) world.addStaticBox(c);
+
+// ---------------------------------------------------------------- trucks
+const loader = new GLTFLoader();
+const glbCache = {};
+const loadGLB = (name) => (glbCache[name] ||= loader.loadAsync('../monster_truck/' + name));
+async function makeTruck(file) {
+  const g = await loadGLB(file);
+  const obj = g.scene.clone(true);
+  obj.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
+  scene.add(obj);
+  return { obj, rig: new MonsterTruckRig(obj) };
+}
+
+let race = null, racers = [], player = null, camMode = 0, lastTime = performance.now(), acc = 0;
+const keys = new Set();
+addEventListener('keydown', (e) => {
+  keys.add(e.code);
+  if (e.code === 'KeyC') camMode = (camMode + 1) % 3;
+  if (e.code === 'KeyR' && player) respawn(player);
+  if (e.code === 'Escape') showMenu();
+});
+addEventListener('keyup', (e) => keys.delete(e.code));
+
+function respawn(rc) {
+  const sp = race.respawnPoint(rc.id);
+  rc.truck.reset({ x: sp.x, z: sp.z, yaw: sp.yaw });
+  toast('Back on course');
+}
+
+async function startRace(routeId, opponents, truckKind) {
+  $('menu').style.display = 'none'; $('results').style.display = 'none';
+  for (const rc of racers) { scene.remove(rc.obj); world.trucks.splice(world.trucks.indexOf(rc.truck), 1); }
+  racers = []; tracks.clear();
+  race = new SprintRace(terrain, routeId);
+  const route = race.route; document.documentElement.style.setProperty('--accent', route.color);
+  const slots = race.gridSlots(opponents + 1);
+  // player starts at the back so there's someone to chase
+  const order = [...slots.keys()].reverse();
+  const playerFile = truckKind === 'stealth' ? 'monster_truck_stealth_gold.glb' : 'monster_truck_lime_black.glb';
+  const aiFiles = truckKind === 'stealth' ? ['monster_truck_lime_black_lod1.glb', 'monster_truck_stealth_gold_lod1.glb'] : ['monster_truck_stealth_gold_lod1.glb', 'monster_truck_lime_black_lod1.glb'];
+  const names = ['Dusty', 'Sidewinder', 'Mirage'];
+  for (let i = 0; i <= opponents; i++) {
+    const sl = slots[order[i]], isP = i === 0;
+    const { obj, rig } = await makeTruck(isP ? playerFile : aiFiles[(i - 1) % 2]);
+    const truck = world.addTruck({ x: sl.x, z: sl.z, yaw: sl.yaw, autoRecoverAfter: 2 });
+    const id = isP ? 'you' : 'ai' + i;
+    race.addRacer(id, { name: isP ? 'You' : names[i - 1], player: isP });
+    const rc = { id, truck, obj, rig, isP, color: isP ? '#ffffff' : ['#3fa9ff', '#ffd23f', '#c46bff'][i - 1] };
+    if (!isP || params.has('autopilot')) {
+      const lane = (sl.x - route.pointAt(sl.s).x) * route.pointAt(sl.s).tz - (sl.z - route.pointAt(sl.s).z) * route.pointAt(sl.s).tx;
+      rc.ai = new SprintAI(race, truck, id, { skill: 0.72 + 0.1 * i, lane, seed: i * 1.7, world });
+    }
+    truck.onLand = (v) => { if (v > 3) sand.burst(new THREE.Vector3(truck.pos[0], truck.pos[1], truck.pos[2]), v); if (isP && v > 6) shake = Math.min(1, v / 14); };
+    truck.onImpact = (other, v, p) => { if (v > 3) sand.burst(new THREE.Vector3(p[0], p[1], p[2]), v * 0.6); if (isP) shake = Math.min(1, v / 12); };
+    racers.push(rc); if (isP) player = rc;
+  }
+  // HUD bar
+  $('bar').innerHTML = race.checkpoints.map((s) => `<div class="cp" style="left:${((s - race.startS) / race.length) * 100}%"></div>`).join('') + racers.map((r) => `<div class="dot" id="dot_${r.id}" style="background:${r.color}"></div>`).join('');
+  drawMiniBase(route);
+  const best = store.get('best.' + route.id);
+  $('best').textContent = best ? 'Best ' + SprintRace.fmt(best.time) : 'Gold ' + SprintRace.fmt(route.timeTarget.gold);
+  race.onGo = () => flashBig('GO!', 700);
+  race.onCheckpoint = (r, i, t) => {
+    if (!r.player) return;
+    const b = store.get('best.' + route.id);
+    const d = b?.splits?.[i] != null ? t - b.splits[i] : null;
+    $('delta').textContent = d == null ? 'CP' + (i + 1) + ' ' + SprintRace.fmt(t) : (d <= 0 ? '−' : '+') + Math.abs(d).toFixed(2);
+    $('delta').className = 'delta ' + (d == null ? '' : d <= 0 ? 'good' : 'bad');
+    toast('Checkpoint ' + (i + 1));
+  };
+  race.onMissed = (r, i) => { if (r.player) banner('Missed checkpoint ' + (i + 1) + ' – go back through it', 3000); };
+  race.onWrongWay = (r, on) => { if (r.player) banner(on ? 'Wrong way' : null); };
+  race.onOffCourse = (r) => { if (r.player) { respawn(player); } };
+  race.onFinish = (r, t, place) => { if (r.player) setTimeout(() => showResults(place, t), 1800); };
+  await map.init(player.truck.pos[0], player.truck.pos[2]);
+  race.start(); flashBig('3', 900); setTimeout(() => flashBig('2', 900), 1000); setTimeout(() => flashBig('1', 900), 2000);
+  camPos.set(player.truck.pos[0] - Math.sin(slots[0].yaw) * 14, player.truck.pos[1] + 6, player.truck.pos[2] - Math.cos(slots[0].yaw) * 14);
+}
+
+// ---------------------------------------------------------------- HUD helpers
+let bigT = 0; function flashBig(t, ms) { $('big').textContent = t; $('big').style.opacity = 1; clearTimeout(bigT); bigT = setTimeout(() => ($('big').style.opacity = 0), ms); }
+let toastT = 0; function toast(t) { $('toast').textContent = t; $('toast').style.opacity = 1; clearTimeout(toastT); toastT = setTimeout(() => ($('toast').style.opacity = 0), 1400); }
+let banT = 0; function banner(t, ms) { clearTimeout(banT); $('banner').style.display = t ? 'block' : 'none'; $('banner').textContent = t || ''; if (t && ms) banT = setTimeout(() => ($('banner').style.display = 'none'), ms); }
+
+let miniBase = null, miniXf = null;
+function drawMiniBase(route) {
+  const c = $('mini'), x = c.getContext('2d');
+  let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+  for (let i = 0; i < route.n; i++) { x0 = Math.min(x0, route.x[i]); x1 = Math.max(x1, route.x[i]); z0 = Math.min(z0, route.z[i]); z1 = Math.max(z1, route.z[i]); }
+  const pad = 14, sc = Math.min((c.width - pad * 2) / (x1 - x0), (c.height - pad * 2) / (z1 - z0));
+  miniXf = (X, Z) => [pad + (X - x0) * sc + ((c.width - pad * 2) - (x1 - x0) * sc) / 2, pad + (Z - z0) * sc + ((c.height - pad * 2) - (z1 - z0) * sc) / 2];
+  x.clearRect(0, 0, c.width, c.height);
+  x.lineWidth = 3; x.strokeStyle = 'rgba(255,255,255,0.75)'; x.beginPath();
+  for (let i = 0; i < route.n; i += 4) { const [a, b] = miniXf(route.x[i], route.z[i]); i ? x.lineTo(a, b) : x.moveTo(a, b); }
+  x.stroke();
+  for (const s of race.checkpoints) { const p = route.pointAt(s), [a, b] = miniXf(p.x, p.z); x.fillStyle = route.color; x.fillRect(a - 2.5, b - 2.5, 5, 5); }
+  const e = route.pointAt(race.finishS), [fa, fb] = miniXf(e.x, e.z); x.fillStyle = '#fff'; x.fillRect(fa - 4, fb - 4, 8, 8);
+  miniBase = x.getImageData(0, 0, c.width, c.height);
+}
+function drawMini() {
+  const x = $('mini').getContext('2d'); x.putImageData(miniBase, 0, 0);
+  for (const r of racers) { const [a, b] = miniXf(r.truck.pos[0], r.truck.pos[2]); x.fillStyle = r.color; x.beginPath(); x.arc(a, b, r.isP ? 5 : 4, 0, 7); x.fill(); x.strokeStyle = '#111'; x.lineWidth = 1.5; x.stroke(); }
+}
+
+function updateHUD() {
+  const r = race.racers.get('you');
+  $('time').textContent = SprintRace.fmt(Math.max(0, r.finished ? r.time : race.clock));
+  $('cp').textContent = Math.min(r.next, race.checkpoints.length) + '/' + race.checkpoints.length;
+  $('pos').innerHTML = r.place + '<small>/' + race.racers.size + '</small>';
+  $('spd').textContent = Math.round(player.truck.speed * 3.6);
+  const sf = terrain.surface(player.truck.pos[0], player.truck.pos[2]);
+  $('surf').textContent = player.truck.airborne ? 'airborne' : sf.track > 0.5 ? 'graded track' : sf.rock > 0.5 ? 'rock' : sf.soft > 0.5 ? 'soft sand' : 'gravel';
+  for (const rc of racers) { const el = $('dot_' + rc.id); if (el) el.style.left = (race.progress(rc.id) * 100) + '%'; }
+  drawMini();
+}
+
+function showResults(place, t) {
+  const route = race.route, tt = route.timeTarget;
+  const medal = t <= tt.gold ? ['GOLD', '#ffd23f'] : t <= tt.silver ? ['SILVER', '#d8dde3'] : t <= tt.bronze ? ['BRONZE', '#d08a4a'] : null;
+  const best = store.get('best.' + route.id);
+  const r = race.racers.get('you');
+  if (!best || t < best.time) store.set('best.' + route.id, { time: t, splits: r.splits });
+  $('rtitle').innerHTML = ['', '1st', '2nd', '3rd', '4th'][place] + ' · ' + SprintRace.fmt(t);
+  $('rsub').innerHTML = route.name + (medal ? ` · <span class="medal" style="color:${medal[1]}">${medal[0]}</span>` : '') + (!best || t < best.time ? ' · new best' : ' · best ' + SprintRace.fmt(best.time));
+  $('rtable').innerHTML = race.standings().map((x, i) => `<tr><td>${i + 1}. ${x.name}</td><td>${x.finished ? SprintRace.fmt(x.time) : 'running…'}</td></tr>`).join('');
+  $('results').style.display = 'grid';
+}
+
+function showMenu() {
+  $('results').style.display = 'none';
+  const sel = store.get('route') || SPRINT_ROUTES[0].id;
+  $('routes').innerHTML = terrain.routes.map((r) => {
+    const b = store.get('best.' + r.id);
+    return `<button class="route ${r.id === sel ? 'sel' : ''}" data-id="${r.id}" style="--c:${r.color}"><b>${r.name}</b><div class="m">${(r.length / 1000).toFixed(1)} km · ${r.features.length} features · ${b ? 'best ' + SprintRace.fmt(b.time) : 'gold ' + SprintRace.fmt(r.timeTarget.gold)}</div><p>${r.blurb}</p></button>`;
+  }).join('');
+  $('routes').querySelectorAll('.route').forEach((el) => el.onclick = () => { $('routes').querySelectorAll('.route').forEach((e) => e.classList.remove('sel')); el.classList.add('sel'); store.set('route', el.dataset.id); });
+  $('sun').value = String(sunElev);
+  $('menu').style.display = 'grid';
+}
+$('go').onclick = () => {
+  const id = $('routes').querySelector('.sel')?.dataset.id || SPRINT_ROUTES[0].id;
+  store.set('route', id); store.set('truck', $('truck').value);
+  if (+$('sun').value !== sunElev) { store.set('sun', +$('sun').value); location.search = '?route=' + id + '&opp=' + $('opp').value + '&truck=' + $('truck').value + '&sun=' + $('sun').value; return; }
+  startRace(id, +$('opp').value, $('truck').value);
+};
+$('again').onclick = () => startRace(race.route.id, racers.length - 1, store.get('truck') || 'lime');
+$('tomenu').onclick = showMenu;
+
+// ---------------------------------------------------------------- input
+let steerS = 0;
+function readInput(dt) {
+  let th = keys.has('KeyW') || keys.has('ArrowUp') ? 1 : 0, br = keys.has('KeyS') || keys.has('ArrowDown') || keys.has('Space') ? 1 : 0;
+  let st = (keys.has('KeyA') || keys.has('ArrowLeft') ? 1 : 0) - (keys.has('KeyD') || keys.has('ArrowRight') ? 1 : 0);
+  const gp = navigator.getGamepads?.()[0];
+  if (gp) {
+    const ax = gp.axes[0] || 0; if (Math.abs(ax) > 0.12) st = -ax;
+    th = Math.max(th, gp.buttons[7]?.value || 0); br = Math.max(br, gp.buttons[6]?.value || 0);
+    if (gp.buttons[3]?.pressed && !readInput.y) respawn(player); readInput.y = gp.buttons[3]?.pressed;
+  }
+  steerS += (st - steerS) * Math.min(1, dt * (Math.abs(st) > Math.abs(steerS) ? 6 : 10));
+  return { throttle: th, brake: br, steer: steerS };
+}
+
+// ---------------------------------------------------------------- camera
+const camPos = new THREE.Vector3(), camLook = new THREE.Vector3(); let shake = 0;
+function updateCamera(dt) {
+  if (window.__mx.freeCam) return;
+  const t = player.truck, p = new THREE.Vector3(...t.rootPosition);
+  const f = new THREE.Vector3(t.forward[0], 0, t.forward[2]).normalize();
+  const vel = new THREE.Vector3(t.vel[0], 0, t.vel[2]);
+  if (vel.length() > 4) f.lerp(vel.clone().normalize(), 0.5).normalize();
+  const dist = [12.5, 20, 7][camMode], height = [5.2, 8.5, 3.2][camMode];
+  const want = p.clone().addScaledVector(f, -dist); want.y = p.y + height;
+  const g = terrain.height(want.x, want.z); want.y = Math.max(want.y, g + 2.2);
+  camPos.lerp(want, 1 - Math.exp(-dt * (camMode === 2 ? 12 : 4.5)));
+  camPos.y = Math.max(camPos.y, terrain.height(camPos.x, camPos.z) + 1.6);
+  const look = p.clone().addScaledVector(f, 7 + t.speed * 0.25); look.y = p.y + 1.6;
+  camLook.lerp(look, 1 - Math.exp(-dt * 8));
+  camera.position.copy(camPos);
+  if (shake > 0) { camera.position.x += (Math.random() - 0.5) * shake * 0.5; camera.position.y += (Math.random() - 0.5) * shake * 0.5; shake = Math.max(0, shake - dt * 2.5); }
+  camera.lookAt(camLook);
+  camera.fov = 60 + Math.min(10, t.speed * 0.35); camera.updateProjectionMatrix();
+}
+
+// ---------------------------------------------------------------- frame
+const _c = new THREE.Vector3(), _f = new THREE.Vector3(), _l = new THREE.Vector3();
+function frame(dtFrame) {
+  if (!race) return;
+  const h = 1 / 60; acc = Math.min(acc + dtFrame, 0.1);
+  while (acc >= h) {
+    if (player.ai) {} else if (race.state !== 'countdown') player.truck.input = race.racers.get('you').finished ? { throttle: 0, brake: 0.4, steer: 0 } : readInput(h);
+    else player.truck.input = { throttle: 0, brake: 1, steer: 0 };
+    for (const rc of racers) rc.ai?.update(h);
+    world.step(h); acc -= h;
+    race.update(h, racers.map((rc) => ({ id: rc.id, pos: rc.truck.pos, vel: rc.truck.vel, forward: rc.truck.forward })));
+  }
+  for (const rc of racers) {
+    const t = rc.truck;
+    rc.obj.position.set(...t.rootPosition); rc.obj.quaternion.set(...t.rootQuaternion);
+    rc.rig.update(dtFrame, { speed: t.wheelSpeed, steer: t.steerAngle, suspension: t.travel });
+    _f.set(...t.forward); _l.set(...t.left);
+    for (const k in t.wheels) {
+      const wh = t.wheels[k]; if (!wh.contact) continue;
+      const [wx, wz] = t.p.wheels[k];
+      const hub = t.toWorld([wx, t.p.wheelRadius, wz]);
+      const gy = terrain.height(hub[0], hub[2]);
+      _c.set(hub[0], gy, hub[2]);
+      const sf = terrain.surface(hub[0], hub[2]);
+      sand.emitWheel(dtFrame, { id: rc.id + k, contact: _c, forward: _f, left: _l, slipLong: wh.slipLong * (0.4 + 0.6 * sf.soft), slipLat: wh.slipLat * (0.5 + 0.5 * sf.soft), speed: t.speed });
+      tracks.stamp(rc.id + k, hub[0], hub[2], _f.x, _f.z, 0.35 + 0.65 * sf.soft);
+    }
+  }
+  updateCamera(dtFrame);
+  map.update(dtFrame, camera, racers.map((r) => r.truck.pos), racers.map((r) => r.truck.vel));
+  tracks.update(map.time);
+  windSand.update(dtFrame, camera, map.gust, renderer);
+  sand.update(dtFrame, camera);
+  updateHUD();
+}
+
+function loop() {
+  const now = performance.now(), dt = Math.min(0.05, (now - lastTime) / 1000); lastTime = now;
+  frame(dt);
+  renderer.render(scene, camera);
+  requestAnimationFrame(loop);
+}
+
+// ---------------------------------------------------------------- boot
+window.__mx = { THREE, scene, camera, renderer, map, terrain, world, tracks, windSand, sand, get race() { return race; }, get racers() { return racers; }, startRace, frame, SprintRace };
+(async () => {
+  const first = SPRINT_ROUTES.find((r) => r.id === (params.get('route') || store.get('route'))) || SPRINT_ROUTES[0];
+  const t = new SprintRace(terrain, first.id), sp = t.gridSlots(1)[0];
+  await map.init(sp.x, sp.z, (p) => { $('lbar').style.width = (p * 100).toFixed(0) + '%'; });
+  $('loading').style.display = 'none';
+  camera.position.set(sp.x - 20, terrain.height(sp.x, sp.z) + 12, sp.z - 20); camera.lookAt(sp.x, 0, sp.z);
+  if (params.has('route') && !params.has('menu')) startRace(first.id, +(params.get('opp') ?? 2), params.get('truck') || store.get('truck') || 'lime');
+  else showMenu();
+  if (!params.has('manual')) loop();
+})();
+</script>
+</body>
+</html>
