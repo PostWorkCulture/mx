@@ -1,0 +1,132 @@
+<html><head><meta charset="utf-8"></head><body style="margin:0;background:#000"><script type="importmap">{"imports":{"three":"./three.module.js","three/addons/":"./jsm/"}}</script>
+<script type="module">
+import * as THREE from 'three';
+import {GLTFLoader} from './jsm/loaders/GLTFLoader.js';
+import {Sky} from './jsm/objects/Sky.js';
+import {EffectComposer} from './jsm/postprocessing/EffectComposer.js';
+import {RenderPass} from './jsm/postprocessing/RenderPass.js';
+import {GTAOPass} from './jsm/postprocessing/GTAOPass.js';
+import {OutputPass} from './jsm/postprocessing/OutputPass.js';
+import {MonsterTruckRig} from './MonsterTruckRig.js';
+import {TruckWorld} from './MonsterTruckSim.js';
+import {SandFX,ParticlePass} from './SandFX.js';
+import {TruckDirt} from './TruckDirt.js';
+const q=new URLSearchParams(location.search);const W=+q.get('w')||1280,H=+q.get('h')||720;const MODE=q.get('mode')||'stills';
+const r=new THREE.WebGLRenderer({antialias:false,preserveDrawingBuffer:true});r.setSize(W,H);document.body.appendChild(r.domElement);
+r.outputColorSpace=THREE.SRGBColorSpace;r.toneMapping=THREE.NeutralToneMapping;r.toneMappingExposure=0.95;
+r.shadowMap.enabled=true;r.shadowMap.type=THREE.PCFSoftShadowMap;
+const s=new THREE.Scene();
+// sun
+const elev=THREE.MathUtils.degToRad(38),azi=THREE.MathUtils.degToRad(-35);
+const sunDir=new THREE.Vector3().setFromSphericalCoords(1,Math.PI/2-elev,azi);
+const sky=new Sky();sky.scale.setScalar(4000);const u=sky.material.uniforms;
+u.turbidity.value=3.5;u.rayleigh.value=1.2;u.mieCoefficient.value=0.004;u.mieDirectionalG.value=0.85;u.sunPosition.value.copy(sunDir);s.add(sky);
+// sand textures (procedural)
+const hash=(x,y)=>{const h=Math.sin(x*127.1+y*311.7)*43758.5453;return h-Math.floor(h)};
+const vn=(x,y)=>{const ix=Math.floor(x),iy=Math.floor(y),fx=x-ix,fy=y-iy;const a=hash(ix,iy),b=hash(ix+1,iy),c=hash(ix,iy+1),d=hash(ix+1,iy+1);const U=fx*fx*(3-2*fx),V=fy*fy*(3-2*fy);return a+(b-a)*U+(c-a)*V+(a-b-c+d)*U*V};
+function sandTex(){const N=512;const cv=document.createElement('canvas');cv.width=cv.height=N;const cx=cv.getContext('2d');const id=cx.createImageData(N,N);
+ const nc=document.createElement('canvas');nc.width=nc.height=N;const nx=nc.getContext('2d');const nd=nx.createImageData(N,N);
+ const hf=(x,y)=>{let v=0;// ripples + grain, tileable via periodic coords
+  const t=2*Math.PI/N;v+=Math.sin((x*t*6)+Math.sin(y*t*2)*1.8)*0.5+vn((x%N)/16,(y%N)/16)*0.4+hash(x,y)*0.25;return v};
+ for(let y=0;y<N;y++)for(let x=0;x<N;x++){const h=hf(x,y),i=(y*N+x)*4;const g=0.9+0.1*vn(x/40,y/40)+(hash(x*3,y)-0.5)*0.06;
+  id.data[i]=222*g;id.data[i+1]=181*g;id.data[i+2]=128*g;id.data[i+3]=255;
+  const dx=hf((x+1)%N,y)-hf((x+N-1)%N,y),dy=hf(x,(y+1)%N)-hf(x,(y+N-1)%N);const n=new THREE.Vector3(-dx*1.2,-dy*1.2,1).normalize();
+  nd.data[i]=(n.x*0.5+0.5)*255;nd.data[i+1]=(n.y*0.5+0.5)*255;nd.data[i+2]=(n.z*0.5+0.5)*255;nd.data[i+3]=255}
+ cx.putImageData(id,0,0);nx.putImageData(nd,0,0);
+ const c=new THREE.CanvasTexture(cv),n=new THREE.CanvasTexture(nc);c.colorSpace=THREE.SRGBColorSpace;
+ for(const t of [c,n]){t.wrapS=t.wrapT=THREE.RepeatWrapping;t.repeat.set(90,90);t.anisotropy=8}return [c,n]}
+const [sc,sn]=sandTex();
+// path & terrain
+const A=4.5,P=46;const px=z=>A*Math.sin(2*Math.PI*z/P);const dpx=z=>A*2*Math.PI/P*Math.cos(2*Math.PI*z/P);
+const gh=(x,z)=>{const dist=Math.max(Math.abs(x)-28,Math.abs(z-50)-70);const m=Math.min(1,Math.max(0,(dist-10)/30));return m*m*(vn(x*0.03,z*0.03)*9+vn(x*0.08+5,z*0.08)*2.5)};
+const geo=new THREE.PlaneGeometry(600,600,300,300);geo.rotateX(-Math.PI/2);const pos=geo.attributes.position;
+for(let i=0;i<pos.count;i++){const x=pos.getX(i),z=pos.getZ(i)+100;pos.setZ(i,z);pos.setY(i,gh(x,z))}geo.computeVertexNormals();
+const ground=new THREE.Mesh(geo,new THREE.MeshStandardMaterial({map:sc,normalMap:sn,normalScale:new THREE.Vector2(0.6,0.6),roughness:0.93,color:0xffffff}));ground.receiveShadow=true;s.add(ground);
+// environment: sky + sand bowl into PMREM
+const envScene=new THREE.Scene();const sky2=new Sky();sky2.scale.setScalar(1000);Object.assign(sky2.material.uniforms.sunPosition.value,sunDir);
+for(const k of ['turbidity','rayleigh','mieCoefficient','mieDirectionalG'])sky2.material.uniforms[k].value=u[k].value;envScene.add(sky2);
+const eg=new THREE.Mesh(new THREE.CircleGeometry(900,64).rotateX(-Math.PI/2),new THREE.MeshBasicMaterial({color:0x9c7a52}));eg.position.y=-2;envScene.add(eg);
+const pm=new THREE.PMREMGenerator(r);s.environment=pm.fromScene(envScene,0,1,2000).texture;s.environmentIntensity=0.75;
+s.fog=new THREE.Fog(0xe9d6b8,120,520);
+const sun=new THREE.DirectionalLight(0xfff0dc,4.2);sun.castShadow=true;sun.shadow.mapSize.set(2048,2048);sun.shadow.radius=3;
+Object.assign(sun.shadow.camera,{left:-8,right:8,top:8,bottom:-8,near:1,far:80});sun.shadow.bias=-0.0002;sun.shadow.normalBias=0.02;s.add(sun);s.add(sun.target);
+const hemi=new THREE.HemisphereLight(0xbfd6ff,0xcaa070,0.15);s.add(hemi);
+// dust
+const NP=600;const pg=new THREE.BufferGeometry();const pp=new Float32Array(NP*3);pg.setAttribute('position',new THREE.BufferAttribute(pp,3));
+const dc=document.createElement('canvas');dc.width=dc.height=64;const dx2=dc.getContext('2d');const rg=dx2.createRadialGradient(32,32,0,32,32,32);rg.addColorStop(0,'rgba(214,176,124,0.32)');rg.addColorStop(1,'rgba(214,176,124,0)');dx2.fillStyle=rg;dx2.fillRect(0,0,64,64);
+const dust=new THREE.Points(pg,new THREE.PointsMaterial({map:new THREE.CanvasTexture(dc),size:1.3,transparent:true,depthWrite:false}));dust.frustumCulled=false;s.add(dust);const parts=[];
+const cam=new THREE.PerspectiveCamera(35,W/H,0.1,5000);
+const rt=new THREE.WebGLRenderTarget(W,H,{type:THREE.HalfFloatType,samples:4});
+const comp=new EffectComposer(r,rt);comp.addPass(new RenderPass(s,cam));
+const ao=new GTAOPass(s,cam,W,H);ao.updateGtaoMaterial({radius:0.6,distanceExponent:1.5,thickness:1.2,scale:1.0,samples:8});ao.blendIntensity=0.85;comp.addPass(ao);
+comp.addPass(new OutputPass());
+
+
+dust.visible=false;
+
+const SCENE=q.get('scene')||'A';
+const rigs={};let loaded=0;
+for(const [k,f] of [['lime','monster_truck_lime_black.glb'],['gold','monster_truck_stealth_gold.glb']]){
+ new GLTFLoader().load(f,g=>{s.add(g.scene);g.scene.traverse(o=>{if(o.isMesh){o.castShadow=true;o.receiveShadow=true;for(const m of [].concat(o.material)){if(m.map)m.map.anisotropy=8}}});
+  rigs[k]=new MonsterTruckRig(g.scene);if(++loaded==2)window.ready=true})}
+window._unusedPose=(o)=>{const R=rig.root;R.position.set(...(o.pos||[0,0,0]));R.rotation.set(o.pitch||0,o.yaw||0,o.roll||0,'YXZ');
+ rig.spin=o.spin||0;rig.update(0,{speed:0,steer:o.steer||0,suspension:o.susp||{FL:0,FR:0,RL:0,RR:0}});
+ if(o.hideBody!==undefined)rig.body.visible=!o.hideBody;
+ sun.position.copy(R.position).addScaledVector(sunDir,40);sun.target.position.copy(R.position);
+ cam.fov=o.fov||35;cam.updateProjectionMatrix();cam.position.set(...o.cam);cam.lookAt(...o.look);comp.render();return r.domElement.toDataURL('image/jpeg',0.93)};
+
+dust.visible=false;
+const rampH=(z,z0,lip,H)=>{if(z<z0||z>lip+1.2)return 0;if(z<=lip){const t=(z-z0)/(lip-z0);return H*((t*t*(3-2*t))*0.55+0.45*t*t)}const t=(z-lip)/1.2;return H*(1-t)*(1-t)};
+const TILT=34*Math.PI/180;
+const gnd=SCENE==='A'?((x,z)=>{if(Math.abs(x)>4.5)return 0;const fx=Math.min(1,(4.5-Math.abs(x))/1.2);const Hl=Math.max(0.2,2.6+x*Math.tan(TILT));return fx*rampH(z,30,44,Hl)}):(()=>0);
+let sandMat=null;s.traverse(o=>{if(!sandMat&&o.isMesh&&o.material&&o.material.normalMap&&o.geometry.parameters&&o.geometry.parameters.width===600)sandMat=o.material});
+if(SCENE==='A'){const L=16,Wd=9;const g=new THREE.PlaneGeometry(Wd,L,60,128);g.rotateX(-Math.PI/2);const p=g.attributes.position;
+ for(let i=0;i<p.count;i++){const x=p.getX(i),z=p.getZ(i)+30+L/2-0.6;p.setZ(i,z);p.setY(i,gnd(x,z)+0.006)}g.computeVertexNormals();const m=new THREE.Mesh(g,sandMat);m.receiveShadow=true;s.add(m)}
+const fxScene=new THREE.Scene();
+const sand=new SandFX(fxScene,{groundHeight:gnd,sunDirection:sunDir});
+comp.insertPass(new ParticlePass(fxScene,cam,sand,ao.depthTexture),2);
+const dirts=[];
+const V3=(a)=>new THREE.Vector3(a[0],a[1],a[2]);
+let world=null,T=0,camP=null,lastCut=-1,msg='',msgT=-9,msgCol='#fff',trucks=[];
+const hud=document.createElement('canvas');hud.width=W;hud.height=H;const hx=hud.getContext('2d');
+function say(t,c){msg=t;msgT=T;msgCol=c||'#fff'}
+function setup(){world=new TruckWorld({groundHeight:gnd});
+ if(SCENE==='A'){const A=world.addTruck({name:'lime',z:6,autoRecoverAfter:1.0});A.vel=[0,0,15];trucks=[[A,rigs.lime]];rigs.gold.root.visible=false;
+   const rc=A.recover.bind(A);A.recover=(...a)=>{say('AUTO-RECOVER - back on its wheels','#9be24a');rc(...a)}}
+ else{const A=world.addTruck({name:'gold',x:0,z:0,yaw:0});const B=world.addTruck({name:'lime',x:-16,z:0.4,yaw:Math.PI/2});B.vel=[21,0,0];trucks=[[A,rigs.gold],[B,rigs.lime]]}
+ for(const [t,rg] of trucks){const d=new TruckDirt(rg.root,{sand,tyre:0.25,low:0.08});sand.addCatcher(d.catcher(t));dirts.push([d,t]);}
+ for(const [t] of trucks){
+  t.onRollover=()=>say('ROLLOVER!  ('+t.name+')','#ff6a4a');
+  t.onLand=(v,i)=>{sand.burst(V3(t.pos),v,2.4);if(v>4)say((i.hull?'BAD LANDING - body hit the ground':'Landed')+'  '+v.toFixed(1)+' m/s','#ffd24a')};
+  t.onImpact=(o,v,pt)=>{if(o&&v>3){sand.burst(new THREE.Vector3(pt[0],0,pt[2]),v*0.45,1.5);say('IMPACT  '+v.toFixed(1)+' m/s','#ff9a3c')}}}}
+function drawHUD(){hx.drawImage(r.domElement,0,0);
+ if(T-msgT<2.2&&msg){const a=Math.min(1,(2.2-(T-msgT))*1.5);hx.font='800 30px sans-serif';hx.fillStyle='rgba(0,0,0,'+0.35*a+')';hx.fillText(msg,42,72);hx.globalAlpha=a;hx.fillStyle=msgCol;hx.fillText(msg,40,70);hx.globalAlpha=1}
+ hx.font='600 15px sans-serif';hx.fillStyle='rgba(255,255,255,0.85)';
+ trucks.forEach(([t],i)=>{hx.fillText(t.name.toUpperCase()+'  tilt '+(t.tilt*57.3).toFixed(0)+'°  '+t.speed.toFixed(1)+' m/s'+(t.airborne?'  AIR':''),40,H-40-i*24)});
+ return hud.toDataURL('image/jpeg',0.92)}
+window.frame=(f,noR)=>{const dt=1/30;if(!world)setup();
+ for(const [t] of trucks){
+  if(SCENE==='A')t.input={throttle:t.tilt>0.9||t.airborne?0:1,brake:0,steer:0};
+  else t.input=t.name==='gold'?{throttle:0,brake:1,steer:0}:{throttle:T<1.2?1:0,brake:T<1.2?0:0.3,steer:0}}
+ world.step(dt);T+=dt;
+ for(const [t,rg] of trucks){rg.root.position.set(...t.rootPosition);rg.root.quaternion.set(...t.rootQuaternion);
+  rg.update(dt,{speed:t.wheelSpeed,steer:t.steerAngle,suspension:t.travel});
+  const fw=V3(t.forward),lf=V3(t.left),up=t.up;
+  if(up[1]>0.6)for(const k in t.wheels){const w=t.wheels[k];if(!w.contact)continue;const [wx,wz]=t.p.wheels[k];
+   const c=t.toWorld([wx,t.p.wheelRadius,wz]);const hub=[c[0]+up[0]*w.s,c[1]+up[1]*w.s,c[2]+up[2]*w.s];
+   sand.emitWheel(dt,{id:t.name+k,contact:new THREE.Vector3(hub[0],gnd(hub[0],hub[2]),hub[2]),forward:fw,left:lf,slipLong:w.slipLong,slipLat:w.slipLat,speed:t.speed})}
+  if(t.hullContact&&t.speed>2.5&&T-(t._scrapeT||0)>0.3){t._scrapeT=T;sand.burst(new THREE.Vector3(t.pos[0],0,t.pos[2]),Math.min(1.6,t.speed*0.15),1.6)}}
+ for(const [d,t] of dirts)d.update(dt,t);
+ sand.update(dt,cam);
+ const [t0]=trucks[0],R0=V3(t0.rootPosition);sun.position.copy(R0).addScaledVector(sunDir,40);sun.target.position.copy(R0);
+ let P,L,cut;
+ if(SCENE==='A'){
+  if(T<2.6){cut=0;P=R0.clone().add(new THREE.Vector3(-6.5,2.2,-10));L=R0.clone().add(new THREE.Vector3(0,1.8,4))}
+  else{cut=1;P=R0.clone().add(new THREE.Vector3(-12.5,3.2,-5));P.y=Math.max(3.2,P.y);L=R0.clone().add(new THREE.Vector3(0,1.4,1))}
+ } else {cut=0;P=new THREE.Vector3(5,2.9,-15.5);L=new THREE.Vector3(1.5,1.5,0).lerp(R0.clone().add(new THREE.Vector3(0,1.4,0)),0.45)}
+ if(q.get('close')){const o=JSON.parse(q.get('close'));P=R0.clone().add(new THREE.Vector3(...o));L=R0.clone().add(new THREE.Vector3(0,1.6,0));cut=9}
+ if(cut!==lastCut||!camP){camP=P.clone();lastCut=cut}else camP.lerp(P,SCENE==='A'&&cut==1?0.06:0.15);
+ cam.fov=SCENE==='A'?(cut?40:42):44;cam.updateProjectionMatrix();cam.position.copy(camP);cam.lookAt(L);
+ if(noR)return '';comp.render();return drawHUD()};
+window.state=()=>({t:T,dirt:dirts.map(([d])=>Object.values(d.level).map(v=>+v.toFixed(2))),trucks:trucks.map(([t])=>({n:t.name,hull:t.hullContact,pos:t.pos.map(v=>+v.toFixed(2)),tilt:+(t.tilt*57.3).toFixed(0),air:t.airborne,v:+t.speed.toFixed(1)})),msg});
+</script></body></html>

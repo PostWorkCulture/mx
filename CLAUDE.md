@@ -13,7 +13,10 @@ Serve the repo root over HTTP (module workers and GLBs don't load from `file://`
 - `desert/` – `DesertTerrain.js` (height function, surfaces, route grading, physics tile cache), `TerrainWorker.js`,
   `routes.js` (sprint routes + buttes), `DesertMap.js` (streaming ground, sky, race dressing), `SandMaterial.js`,
   `SandTracks.js`, `WindSand.js`, `SprintRace.js` (race rules + AI), `desert_sprint.html` (playable demo).
-- `dirt_bike/` – white dirt bike GLBs (the chosen bike).
+- `dirt_bike/` – `DirtBikeSim.js` (`BikeBody` / `addBike`: two-wheel physics that runs inside `TruckWorld`, so bikes share
+  ground, surfaces, statics and collisions with trucks), `DirtBikeRig.js` (drives the GLB: steering, fork, swingarm, wheels,
+  plus a procedural rider with IK; `RIDER_KITS`), `bike_test.mjs` (headless node checks + 3-bike AI races per route),
+  white dirt bike GLBs (hero + `_lod1`).
 - `red_monster_truck_hero.glb` / `_lod1.glb` – original red truck (v2.2).
 
 ## Conventions
@@ -21,6 +24,10 @@ Serve the repo root over HTTP (module workers and GLBs don't load from `file://`
 - Terrain is a height function `(x, z) => y`; physics reads it through `DesertTerrain.height` (0.5 m cached tiles).
 - Wind blows toward +X (east): dunes have gentle windward slopes facing west and slip faces facing east.
 - Race format: point-to-point sprints (start → checkpoints → finish), not circuits.
+- Menu has two options: Roam (free drive, no clock) or Race (next route in rotation, 3 rivals). ← → in the menu flips the
+  ride: monster truck (lime / stealth livery) or dirt bike (rider kit). Opponents use the same
+  vehicle type. Best times are stored per route and vehicle (`mx.best.<route>` for trucks, `mx.best.<route>.bike`).
+  URL: `?roam` or `?route=<id>&vehicle=truck|bike&truck=lime|stealth&kit=orange|red|lime|blue` (old `truck=` links still work).
 
 ## Assets
 - Only runtime assets go in the repo (each GLB ≲ 15 MB; no Git LFS – GitHub Pages can't serve LFS files).
