@@ -1,10 +1,13 @@
-// SandTracks.js – persistent tyre ruts pressed into the sand (three.js r150+).
+// SandTracks.js – tyre ruts pressed into the sand that fade away (three.js r150+).
 //
-// Each wheel lays a ribbon of quads on the ground: a dark rut floor with chevron lug prints, rut walls
-// lit/shadowed by the sun, and fades out over `life` seconds. Drawn with multiply blending in one draw
-// call over a ring buffer, so old marks are recycled. Deeper/darker in soft sand, faint on hardpack.
+// Each wheel lays a ribbon of quads on the ground: a slightly darker, warmer rut floor (disturbed sand),
+// faint lug prints, and rut walls in soft shadow on the side away from the sun. Marks hold for a while,
+// then fade out smoothly and are gone after `life` seconds (default 40). Drawn with multiply blending in
+// one draw call over a ring buffer. Overlapping tracks don't stack darker: a stencil pass lets each
+// pixel be darkened once per frame (needs `stencil: true` on the WebGLRenderer; without it tracks still
+// work, overlaps are just a little darker).
 //
-//   const tracks = new SandTracks(scene, { groundHeight: terrain.height, sunDir });
+//   const tracks = new SandTracks(scene, { groundHeight: terrain.height, sunDir, life: 40 });
 //   // per frame, per wheel touching the ground:
 //   tracks.stamp(truck.id + k, x, z, fx, fz, strength);   // contact point, truck forward (xz), 0..1
 //   tracks.update(elapsed);
@@ -12,52 +15,55 @@ import * as THREE from 'three';
 
 const VERT = /* glsl */`
   attribute vec2 aUV; attribute float aBirth; attribute float aStr; attribute float aShade;
-  uniform float uTime; uniform float uLife;
+  uniform float uTime; uniform float uLife; uniform float uHold;
   varying vec2 vUV; varying float vFade; varying float vShade; varying float vDist;
   #include <fog_pars_vertex>
   void main() {
     vUV = aUV; vShade = aShade;
     float age = uTime - aBirth;
-    vFade = aStr * (1.0 - smoothstep(uLife * 0.6, uLife, age)) * step(0.0, aBirth);
+    // full strength for the first uHold of the life, then a smooth fade to nothing at uLife
+    vFade = aStr * (1.0 - smoothstep(uLife * uHold, uLife, age)) * step(0.0, aBirth);
     vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
     vDist = -mvPosition.z;
     gl_Position = projectionMatrix * mvPosition;
+    if (age > uLife || aBirth < 0.0) gl_Position = vec4(2.0, 2.0, 2.0, 1.0);   // expired: clipped away
     #include <fog_vertex>
   }`;
 const FRAG = /* glsl */`
+  uniform vec3 uRut; uniform vec3 uShade; uniform float uDepth;
   varying vec2 vUV; varying float vFade; varying float vShade; varying float vDist;
   #include <fog_pars_fragment>
   void main() {
     float u = vUV.x * 2.0 - 1.0, au = abs(u);
-    if (au > 1.0) discard;
-    float floorM = 1.0 - smoothstep(0.62, 0.86, au);
-    float wall = smoothstep(0.55, 0.85, au) * (1.0 - smoothstep(0.88, 1.0, au));
-    // chevron lugs (monster-truck paddle tread)
+    float a = vFade * (1.0 - smoothstep(60.0, 100.0, vDist));
+    if (au > 1.0 || a < 0.01) discard;
+    float floorM = 1.0 - smoothstep(0.55, 0.9, au);
+    float wall = smoothstep(0.5, 0.82, au) * (1.0 - smoothstep(0.86, 1.0, au));
+    // paddle-tread lug prints, only up close
     float chev = fract(vUV.y * 1.15 + au * 0.55);
-    float lug = smoothstep(0.40, 0.47, chev) * (1.0 - smoothstep(0.70, 0.77, chev)) * floorM;
-    // rut walls: the wall facing the sun is lit, the other in shade (vShade = side·sun)
-    float wallLight = sign(u) * vShade;
-    float f = 1.0;
-    float near = 1.0 - smoothstep(12.0, 45.0, vDist);
-    f -= floorM * 0.13;                    // disturbed sand is darker, rut floor in soft shadow
-    f -= lug * 0.08 * near;
-    f -= wall * max(0.0, -wallLight) * 0.35;
-    f += wall * max(0.0, wallLight) * 0.06;
-    float a = vFade * (1.0 - smoothstep(70.0, 110.0, vDist));
-    f = mix(1.0, f, a);
+    float lug = smoothstep(0.40, 0.47, chev) * (1.0 - smoothstep(0.70, 0.77, chev)) * floorM * (1.0 - smoothstep(10.0, 35.0, vDist));
+    // wall facing away from the sun sits in soft, slightly cool shadow (vShade = side·sun)
+    float shade = wall * max(0.0, -sign(u) * vShade);
+    vec3 f = vec3(1.0);
+    f = mix(f, uRut, floorM * uDepth);                 // disturbed sand: a touch darker and warmer
+    f = mix(f, uRut, lug * 0.35 * uDepth);
+    f = mix(f, uShade, shade * uDepth);
+    f = mix(vec3(1.0), f, a);
     #ifdef USE_FOG
       #ifdef FOG_EXP2
         float fogFactor = 1.0 - exp(-fogDensity * fogDensity * vFogDepth * vFogDepth);
       #else
         float fogFactor = smoothstep(fogNear, fogFar, vFogDepth);
       #endif
-      f = mix(f, 1.0, fogFactor);
+      f = mix(f, vec3(1.0), fogFactor);
     #endif
-    gl_FragColor = vec4(vec3(min(f, 1.0)), 1.0);
+    gl_FragColor = vec4(min(f, vec3(1.0)), 1.0);
   }`;
 
 export class SandTracks {
-  constructor(scene, { groundHeight, sunDir = new THREE.Vector3(0.5, 0.5, 0.2), maxSegments = 18000, width = 0.95, spacing = 0.35, life = 180, lift = 0.035 } = {}) {
+  constructor(scene, { groundHeight, sunDir = new THREE.Vector3(0.5, 0.5, 0.2), maxSegments = 18000, width = 0.95, spacing = 0.35, life = 40, hold = 0.35, lift = 0.035,
+    rutColor = new THREE.Color(0.9, 0.84, 0.76), shadeColor = new THREE.Color(0.82, 0.82, 0.86), depth = 1 } = {}) {
+    // rutColor / shadeColor multiply the sand underneath (1,1,1 = invisible); depth scales both
     this.groundHeight = groundHeight; this.width = width; this.spacing = spacing; this.lift = lift;
     this.max = maxSegments; this.head = 0; this.time = 0;
     this.sun = new THREE.Vector2(sunDir.x, sunDir.z).normalize();
@@ -75,10 +81,14 @@ export class SandTracks {
     g.setIndex(new THREE.BufferAttribute(idx, 1));
     this.mat = new THREE.ShaderMaterial({
       vertexShader: VERT, fragmentShader: FRAG, fog: true,
-      uniforms: THREE.UniformsUtils.merge([THREE.UniformsLib.fog, { uTime: { value: 0 }, uLife: { value: life } }]),
+      uniforms: THREE.UniformsUtils.merge([THREE.UniformsLib.fog, { uTime: { value: 0 }, uLife: { value: life }, uHold: { value: hold },
+        uRut: { value: rutColor }, uShade: { value: shadeColor }, uDepth: { value: depth } }]),
       transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4,
       blending: THREE.CustomBlending, blendEquation: THREE.AddEquation, blendSrc: THREE.DstColorFactor, blendDst: THREE.ZeroFactor,
+      // each pixel darkened at most once per frame, so crossing / overlapping tracks don't build up to black
+      stencilWrite: true, stencilRef: 1, stencilFunc: THREE.NotEqualStencilFunc, stencilZPass: THREE.ReplaceStencilOp,
     });
+    this.life = life;
     this.mesh = new THREE.Mesh(g, this.mat); this.mesh.frustumCulled = false; this.mesh.renderOrder = 1; this.mesh.name = 'SandTracks';
     scene.add(this.mesh);
     this.last = new Map();
@@ -87,14 +97,23 @@ export class SandTracks {
 
   // x, z: contact point; fx, fz: rolling direction (unit, xz); strength 0..1 (soft sand ≈1, hardpack ≈0.3)
   stamp(key, x, z, fx, fz, strength = 1) {
-    let L = this.last.get(key);
+    const L = this.last.get(key);
     const now = this.time;
-    if (!L || now - L.t > 0.25) { this.last.set(key, { x, z, v: 0, t: now, lx: 0, lz: 0 }); return; }
+    if (!L || now - L.t > 0.25) { this.last.set(key, { x, z, v: 0, t: now }); return; }
     const dx = x - L.x, dz = z - L.z, d = Math.hypot(dx, dz);
     if (d < this.spacing) { L.t = now; return; }
-    if (d > 3) { this.last.set(key, { x, z, v: 0, t: now }); return; }
+    if (d > 2) { this.last.set(key, { x, z, v: 0, t: now }); return; }   // a hop or landing: start a fresh mark
+    // split into short pieces so the ribbon follows the curve of the dune instead of cutting across it
+    const n = Math.ceil(d / this.spacing);
+    for (let j = 0; j < n; j++) this._segment(L, L.x + (x - L.x) / (n - j), L.z + (z - L.z) / (n - j), strength);
+    L.t = now;
+  }
+
+  _segment(L, x, z, strength) {
+    const dx = x - L.x, dz = z - L.z, d = Math.hypot(dx, dz);
+    if (d < 1e-4) return;
     const ux = dx / d, uz = dz / d, sx = uz, sz = -ux;   // side (right of travel)
-    const hw = this.width / 2;
+    const hw = this.width / 2, now = this.time;
     const i = this.head; this.head = (this.head + 1) % this.max;
     const P = this.aPos.array, U = this.aUV.array, B = this.aBirth.array, S = this.aStr.array, SH = this.aShade.array;
     const pts = [[L.x, L.z, L.sx ?? sx, L.sz ?? sz, L.v], [x, z, sx, sz, L.v + d]];
@@ -106,8 +125,9 @@ export class SandTracks {
       B[k] = now; S[k] = strength; SH[k] = qx * this.sun.x + qz * this.sun.y;
       k++;
     }
-    L.x = x; L.z = z; L.v += d; L.t = now; L.sx = sx; L.sz = sz;
-    this._dirty[0] = Math.min(this._dirty[0], i * 4); this._dirty[1] = Math.max(this._dirty[1], i * 4 + 3);
+    L.x = x; L.z = z; L.v += d; L.sx = sx; L.sz = sz;
+    if (this._dirty[0] === Infinity || i * 4 >= this._dirty[0]) { this._dirty[0] = Math.min(this._dirty[0], i * 4); this._dirty[1] = Math.max(this._dirty[1], i * 4 + 3); }
+    else { this._dirty = [0, this.max * 4 - 1]; }                   // ring buffer wrapped this frame: upload all
   }
 
   update(time) {
@@ -120,6 +140,9 @@ export class SandTracks {
       this._dirty = [Infinity, -Infinity];
     }
   }
+
+  // change how long marks last (seconds) and when the fade starts (0..1 of the life)
+  setLife(life, hold = this.mat.uniforms.uHold.value) { this.life = life; this.mat.uniforms.uLife.value = life; this.mat.uniforms.uHold.value = hold; }
 
   clear() { this.aBirth.array.fill(-1e6); this.aBirth.clearUpdateRanges?.(); this.aBirth.needsUpdate = true; this.last.clear(); }
 }
