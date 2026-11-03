@@ -176,7 +176,7 @@ export class SprintAI {
     this._avoid += (clamp(avoid, -7, 7) - this._avoid) * Math.min(1, dt * 2);
     const half = R.halfWidth - 2.5;
     const lane = clamp(this.lane + Math.sin(this._laneT * 0.13 + this._seed) * 2.5 - this._avoid, -half, half);
-    let look = 16 + v * 0.7;
+    let look = 16 + v * (truck.kind === 'bike' ? 0.95 : 0.7);   // bikes take ~0.5 s to roll into a turn: look further ahead
     if (this._wide) look += 12;                     // target was off to the side last frame: aim further out (no orbiting)
     const p = R.pointAt(Math.min(r.s + look, R.length));
     const tx = p.x + p.tz * lane, tz = p.z - p.tx * lane;
@@ -186,7 +186,10 @@ export class SprintAI {
     const lx = dx * l[0] + dz * l[2], lz = dx * f[0] + dz * f[2];
     const ang = Math.atan2(lx, lz);
     this._wide = Math.abs(ang) > 1.0;
-    let steer = clamp(ang * 2.4 / (1 + v / 14), -1, 1);
+    // trucks: steering gets gentler with speed. Bikes: input = lean (proportional, see DirtBikeSim), so the AI asks
+    // for the same lean the old speed-boosted mapping gave it
+    const sg = truck.kind === 'bike' ? (truck.p.steerGainSpeed > 0 ? 1 : 1 + v / 12) : 1;
+    let steer = clamp(ang * 2.4 * sg / (1 + v / 14), -1, 1);
     this._air = truck.airborne ? 0.6 : Math.max(0, (this._air || 0) - dt);
     if (this._air > 0) steer *= truck.airborne ? 0 : 0.35;   // straight wheels for the landing
     // corner speed: look 20–140 m ahead for the tightest curvature

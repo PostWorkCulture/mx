@@ -76,8 +76,12 @@ export const TRUCK_DEFAULTS = {
   hullBox: { center: [0, 2.15, -0.05], half: [1.17, 0.85, 2.45] },
   hullStiffness: 380000, hullDamping: 70000, hullFriction: 0.6,
   // air control (driver throttle/brake in the air)
-  airPitchLevel: 3.0, airPitchDamp: 1.6, airPitchTarget: -0.06, airRollLevel: 1.5, airRollDamp: 1.2,
+  airPitchLevel: 3.0, airPitchDamp: 1.6, airPitchTarget: -0.06, airRollLevel: 2.4, airRollDamp: 2.2, airControlTilt: 1.45,
   airYawAlign: 2.2, airYawDamp: 1.6,   // arcade: in the air the truck swings its nose round to where it's flying, so it lands straight
+  // tip resistance (game assist, wheels or body on the ground): the wide stance and the driver's weight
+  // shift resist rolling once the truck leans past ~17° to the ground; fades out by ~90° so a truck that
+  // is really going over still goes over (bad landings, big T-bones, steep kickers)
+  tipAssist: 5, tipAssistDamp: 4, tipAssistFrom: 0.3, tipAssistTo: 1.6,
   // events / recovery
   rolloverTilt: 1.75,                 // rad (~100°) past which onRollover fires
   autoRecoverAfter: null,             // seconds stuck on side / roof before auto recover (null = never)
@@ -254,7 +258,18 @@ export class TruckBody {
     }
     this._touching = touching; this._hullHits = hullHits; this._hullImpact = hullImpact;
     // air control: the driver can level pitch with the throttle/brake; roll is barely controllable
-    if (touching === 0 && hullHits === 0 && this.tilt < 1.2) {
+    if ((touching > 0 || hullHits > 0) && p.tipAssist > 0) {
+      const n = W.groundNormal(this.pos[0], this.pos[2]);
+      const rollRel = Math.asin(clamp(V.dot(left, n), -1, 1));            // + = left side up, relative to the ground
+      const a = Math.abs(rollRel), a0 = p.tipAssistFrom, a1 = p.tipAssistTo;
+      const k = clamp((a - a0) / 0.25, 0, 1) * clamp((a1 - a) / 0.4, 0, 1);
+      if (k > 0) {
+        const wz = V.dot(this.w, fwd);                                      // roll rate (+ = rolling left side up… see roll sign)
+        const tz = (-p.tipAssist * (rollRel - Math.sign(rollRel) * a0) - p.tipAssistDamp * wz) * k * p.inertia[2];
+        this._T = V.add(this._T, V.mul(fwd, tz));
+      }
+    }
+    if (touching === 0 && hullHits === 0 && this.tilt < p.airControlTilt) {
       const pitch = Math.asin(clamp(fwd[1], -1, 1));
       const roll = Math.asin(clamp(left[1], -1, 1));
       const wl = qMulVec(qConj(this.q), this.w);                // angular velocity in the truck frame

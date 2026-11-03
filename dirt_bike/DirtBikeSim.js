@@ -49,35 +49,36 @@ const qConj = (q) => [-q[0], -q[1], -q[2], q[3]];
 export const BIKE_DEFAULTS = {
   // bike (~112 kg) + rider (~78 kg)
   mass: 190,
-  inertia: [52, 46, 30],               // pitch, yaw, roll about the CG
+  inertia: [74, 60, 38],               // pitch, yaw, roll about the CG (rider included: a planted, heavy feel)
   cgHeight: 0.84,
   wheelRadius: 0.346, tyreTube: 0.055, // tyre outer radius, and the tread's cross-section radius
   wheels: { F: [0, 0.74], R: [0, -0.74] },
   wheelbase: 1.48,
   wheelMass: 14,
   // suspension (along the bike's up axis; travel 0 = static sag)
-  springRate: 11000, dampCompression: 1100, dampRebound: 1700,
-  bumpStart: 0.14, bumpRate: 420000, bumpDamp: 5000,
-  droop: 0.10, travelMax: 0.20, endStopRate: 4e5, endStopDamp: 9000, topOutForce: 0.25,
+  springRate: 11000, dampCompression: 1150, dampRebound: 2000,
+  bumpStart: 0.165, bumpRate: 420000, bumpDamp: 5000,
+  droop: 0.10, travelMax: 0.23, endStopRate: 4e5, endStopDamp: 9000, topOutForce: 0.25,
   // tyres
-  tyreRate: 70000, tyreDamp: 450, tyreMaxForce: 26000,
+  tyreRate: 70000, tyreDamp: 950,   // knobbies in sand: well damped, so ripples don't make the bike chatter tyreMaxForce: 26000,
   tyreBottom: 0.045, tyreBottomRate: 4e6, tyreBottomDamp: 6000,
   grip: 0.86, gripSideSat: 0.7, gripLoadCap: 2.5,
   rollingResistance: 0.02,
   longForceHeight: 0.42,               // anti-squat / anti-dive: drive & brake act this far above the patch (less pitch / weight transfer)
   // drive
   driveForce: 4700, topSpeed: 58, brakeForce: 1900, frontBrakeShare: 0.6,
-  maxSteer: 0.6, aLatMax: 7.4, steerRate: 3.2, steerGainSpeed: 12,     // aLatMax: cornering accel (m/s²) at full lean → max lean ≈ 37°
+  maxSteer: 0.6, aLatMax: 7.4, steerRate: 2.4, steerGainSpeed: 0,     // aLatMax: cornering accel (m/s²) at full lean → max lean ≈ 37°
+  leanRate: 1.25, leanResp: 7,                      // rad/s the rider can roll the bike in/out at speed (≈0.5 s to full lean): weight, not twitch
   // rider balance
-  yawAssist: 9, yawAssistMax: 900,
+  yawAssist: 4.5, yawAssistMax: 650,
   leanMax: 0.95, balanceKp: 320, balanceKd: 36, balanceTorque: 9000,
   wheelieStart: 0.22, wheelieFull: 0.42,   // rider feathers the throttle as the nose lifts past these pitch angles (rad, vs the ground)
   // collision hull (bike + rider) – also used for vehicle-vs-vehicle contacts
   hullBox: { center: [0, 0.82, -0.05], half: [0.24, 0.42, 0.98] },
   hullStiffness: 260000, hullDamping: 7000, hullFriction: 0.7,
   // air control
-  airPitchLevel: 4.5, airPitchDamp: 2.2, airPitchTarget: -0.05, airPitchThrottle: 0.32, airPitchBrake: 0.42,
-  airRollLevel: 9.0, airRollDamp: 4.5,
+  airPitchLevel: 3.0, airPitchDamp: 1.7, airPitchTarget: -0.05, airPitchThrottle: 0.32, airPitchBrake: 0.42,
+  airRollLevel: 3.2, airRollDamp: 2.6,   // the rider levels a crossed-up bike gradually (body English), it doesn't snap flat
   // crashes
   crashTilt: 1.2, crashSpeed: 2.5, crashRecover: 1.8,
   ejectSpeed: 20, ejectImpact: 6.5, ejectTilt: 2.1, ejectPitch: 0.6, ejectRecover: 3.2,   // throw the rider off: see _postStep
@@ -109,7 +110,7 @@ export class BikeBody extends TruckBody {
     const p = this.p;
     this.preload = (p.mass * this.world.gravity) / 2 / p.springRate;
     this.tyreRest = ((p.mass / 2 + p.wheelMass) * this.world.gravity) / p.tyreRate;
-    this.crashed = false; this.crashTime = 0; this.lean = 0; this.ejected = false;
+    this.crashed = false; this.crashTime = 0; this.lean = 0; this.leanVel = 0; this.ejected = false;
   }
 
   _forces(h) {
@@ -124,8 +125,16 @@ export class BikeBody extends TruckBody {
     const roll0 = Math.asin(clamp(left[1], -1, 1));
     const sp = Math.abs(vLong), v2 = Math.max(vLong * vLong, 1);
     // input → cornering acceleration; at speed a small input already asks for the full lean (like the trucks' steering)
-    const aDes = p.aLatMax * clamp(clamp(inp.steer, -1, 1) * (1 + sp / p.steerGainSpeed), -1, 1) * clamp(sp / 6, 0.25, 1);
-    this.lean = -Math.min(p.leanMax, Math.atan(Math.abs(aDes) / G)) * Math.sign(aDes);
+    // input → cornering acceleration → lean. steerGainSpeed > 0 makes small inputs ask for more lean at speed (twitchy);
+    // 0 = proportional, like a real bike where you push the bar and the bike rolls in at its own pace
+    const gain = p.steerGainSpeed > 0 ? 1 + sp / p.steerGainSpeed : 1;
+    const aDes = p.aLatMax * clamp(clamp(inp.steer, -1, 1) * gain, -1, 1) * clamp(sp / 6, 0.25, 1);
+    const leanCmd = -Math.min(p.leanMax, Math.atan(Math.abs(aDes) / G)) * Math.sign(aDes);
+    // a bike with a rider on it has weight: the lean target rolls in and out at a limited rate (faster at low speed)
+    // second order (eases in and out, no snap) with a rate cap; leanVel is fed forward to the balance below
+    const lr = p.leanRate * (1 + 1.2 * clamp((10 - sp) / 10, 0, 1)), wn = p.leanResp;
+    this.leanVel = clamp(this.leanVel + (wn * wn * (leanCmd - this.lean) - 2 * wn * this.leanVel) * h, -lr, lr);
+    this.lean += this.leanVel * h;
     const dLean = Math.atan((p.wheelbase * G * Math.tan(-roll0)) / v2) * Math.sign(vLong || 1);
     const kd = clamp((sp - 3) / 4, 0, 1);
     const steerTarget = clamp(kd * dLean + (1 - kd) * clamp(inp.steer, -1, 1) * p.maxSteer, -p.maxSteer, p.maxSteer);
@@ -247,7 +256,7 @@ export class BikeBody extends TruckBody {
       // hold the lean the rider asked for (the front wheel follows it, see the steering above)
       const target = this.lean;
       const err = target - roll, rate = wl[2];
-      const tq = clamp((p.balanceKp * err - p.balanceKd * rate) * p.inertia[2], -p.balanceTorque, p.balanceTorque) * (touching === 2 ? 1 : 0.7);
+      const tq = clamp((p.balanceKp * err + p.balanceKd * (this.leanVel - rate)) * p.inertia[2], -p.balanceTorque, p.balanceTorque) * (touching === 2 ? 1 : 0.7);
       this._T = V.add(this._T, V.mul(fwd, tq));
       // the rider makes the bike carve the turn its lean asks for and catches slides (an assist, limited, so big slides still happen)
       // target yaw rate: the turn the current lean balances (g·tan φ / v), or the steering's at walking pace

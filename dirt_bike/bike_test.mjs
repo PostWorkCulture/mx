@@ -70,3 +70,46 @@ if (mode === 'race') {
     for (const r of rs) { const rr = race.racers.get(r.id); console.log('  ', r.id, rr.finished ? SprintRace.fmt(rr.time) : 'DNF s=' + rr.s.toFixed(0) + ' next=' + rr.next + '/' + (race.checkpoints.length) + ' missed=' + rr.missed + ' d=' + rr.d.toFixed(1) + ' finishS=' + race.finishS.toFixed(0) + ' v=' + r.b.speed.toFixed(1) + ' crashed=' + r.b.crashed + ' tilt=' + (r.b.tilt*57.3).toFixed(0), 'crashes', r.crashes, 'thrown', r.ejected || 0, 'max landing', r.maxLand.toFixed(1)); }
   }
 }
+if (mode === 'feel') {
+  // handling feel: keyboard-style steering steps (same input smoothing as the game's readInput) at several speeds,
+  // then a jitter check riding the real routes. OPTS env = JSON overrides for the bike.
+  const O = JSON.parse(process.env.OPTS || '{}'), D = (r) => (r * 57.3).toFixed(1);
+  for (const v0 of [12, 25, 40]) {
+    const world = new TruckWorld({ groundHeight: () => 0 });
+    const b = addBike(world, { x: 0, z: 0, yaw: 0, ...O });
+    for (let i = 0; i < 90; i++) world.step(h);
+    b.vel = [0, 0, v0];
+    let steerS = 0, t90 = null, peak = 0, yawPk = 0, rr2 = 0, n = 0, last = 0, crashes = 0; b.onCrash = () => crashes++;
+    for (let i = 0; i < 60 * 4; i++) {
+      const t = i * h, st = t > 0.2 && t < 2.6 ? 1 : 0;
+      steerS += (st - steerS) * Math.min(1, h * (Math.abs(st) > Math.abs(steerS) ? 6 : 10));
+      b.input = { throttle: b.vLong < v0 ? 1 : 0.3, brake: 0, steer: steerS };
+      world.step(h);
+      const lean = -b.roll; peak = Math.max(peak, lean); yawPk = Math.max(yawPk, Math.abs(b.w[1]));
+      if (t90 == null && lean > 0.9 * Math.atan(b.p.aLatMax / 9.81) * 0.95) t90 = t - 0.2;
+      if (t > 1.6 && t < 2.6) { const wz = b.w[0] * b.forward[0] + b.w[1] * b.forward[1] + b.w[2] * b.forward[2]; rr2 += wz * wz; n++; last = lean; }
+    }
+    console.log(`step @${v0}: lean90 ${t90 == null ? '—' : t90.toFixed(2) + 's'}  peak ${D(peak)}°  held ${D(last)}°  overshoot ${D(peak - last)}°  peak yaw ${D(yawPk)}°/s  wobble ${D(Math.sqrt(rr2 / n))}°/s  crashes ${crashes}`);
+  }
+  if (process.env.FAST) process.exit(0);
+  // terrain jitter: one AI bike per route, RMS of angular acceleration (how much the bike shakes)
+  const terrain = new DesertTerrain({ routes: SPRINT_ROUTES, buttes: BUTTES });
+  const world = new TruckWorld({ groundHeight: terrain.height, surface: terrain.surface });
+  for (const route of SPRINT_ROUTES.map((r) => r.id)) {
+    world.trucks.length = 0;
+    const race = new SprintRace(terrain, route), sl = race.gridSlots(1)[0], R = race.route;
+    const b = addBike(world, { x: sl.x, z: sl.z, yaw: sl.yaw, autoRecoverAfter: 2, ...O });
+    race.addRacer('b', { name: 'b' }); const p = R.pointAt(sl.s);
+    const ai = new SprintAI(race, b, 'b', { skill: 0.9, lane: (sl.x - p.x) * p.tz - (sl.z - p.z) * p.tx, seed: 1, world });
+    let crashes = 0, ej = 0, acc2 = 0, n = 0, wPrev = [0, 0, 0], maxLand = 0; b.onCrash = (bb, v, i) => { crashes++; if (i?.ejected) ej++; }; b.onLand = (v) => maxLand = Math.max(maxLand, v);
+    race.start(); let t = 0;
+    while (t < 240 && !race.racers.get('b').finished) {
+      terrain.prefetch(b.pos[0], b.pos[2], 70, 50); ai.update(h); world.step(h); t += h;
+      if (!b.crashed && !b.airborne && t > 5) { const a = b.w.map((x, i) => (x - wPrev[i]) / h); acc2 += a[0] * a[0] + a[1] * a[1] + a[2] * a[2]; n++; }
+      wPrev = b.w.slice();
+      race.update(h, [{ id: 'b', pos: b.pos, vel: b.vel, forward: b.forward }]);
+    }
+    const rr = race.racers.get('b');
+    console.log(`${route.padEnd(14)} ${rr.finished ? SprintRace.fmt(rr.time) : 'DNF'}  crashes ${crashes} (thrown ${ej})  shake ${Math.sqrt(acc2 / Math.max(n, 1)).toFixed(1)} rad/s²  max landing ${maxLand.toFixed(1)} m/s`);
+  }
+}

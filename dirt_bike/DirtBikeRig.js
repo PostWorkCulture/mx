@@ -279,8 +279,8 @@ export class DirtBikeRig {
     // steering about the raked head (Euler order XYZ: rotation.y turns about the tilted axis)
     this.steering.quaternion.copy(this.steerBase).multiply(this._qx.setFromAxisAngle(UP, steer));
     const sF = suspension.F || 0, sR = suspension.R || 0;
-    this.forkLower.position.y = this.forkRest + THREE.MathUtils.clamp(sF / Math.cos(RAKE), -0.02, 0.22);
-    this.swingarm.rotation.x = this.swingRest + Math.asin(THREE.MathUtils.clamp(sR / SWING_ARM, -0.08, 0.35));
+    this.forkLower.position.y = this.forkRest + THREE.MathUtils.clamp(sF / Math.cos(RAKE), -0.02, 0.26);
+    this.swingarm.rotation.x = this.swingRest + Math.asin(THREE.MathUtils.clamp(sR / SWING_ARM, -0.08, 0.44));
     const vF = bike ? bike.wheelSpeedFront : speed;
     this.spinF = (this.spinF + (vF * dt) / this.wheelRadius.F) % (Math.PI * 2);
     this.spinR = (this.spinR + (speed * dt) / this.wheelRadius.R) % (Math.PI * 2);
