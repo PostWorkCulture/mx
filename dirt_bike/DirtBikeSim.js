@@ -14,7 +14,9 @@
 //     sensitivity on hard landings, wheelie control (throttle eases off as the nose lifts)
 //   • air control like a real rider: throttle lifts the nose, rear brake drops it, body English levels the roll
 //   • crashes: the rider/bars touching the ground, or lying over past ~70°, ends the run → onCrash;
-//     the bike is picked up after `crashRecover` seconds (onRecover)
+//     the bike is picked up after `crashRecover` seconds (onRecover). Big ones – fast, a hard hit, or
+//     landing upside down – throw the rider off (bike.ejected; DirtBikeRig turns the rider into a ragdoll)
+//     and take longer to recover from (`ejectRecover`)
 //
 //   import { TruckWorld } from '../monster_truck/MonsterTruckSim.js';
 //   import { addBike } from '../dirt_bike/DirtBikeSim.js';
@@ -64,7 +66,7 @@ export const BIKE_DEFAULTS = {
   rollingResistance: 0.02,
   longForceHeight: 0.42,               // anti-squat / anti-dive: drive & brake act this far above the patch (less pitch / weight transfer)
   // drive
-  driveForce: 2350, topSpeed: 29, brakeForce: 1500, frontBrakeShare: 0.6,
+  driveForce: 4700, topSpeed: 58, brakeForce: 1900, frontBrakeShare: 0.6,
   maxSteer: 0.6, aLatMax: 7.4, steerRate: 3.2, steerGainSpeed: 12,     // aLatMax: cornering accel (m/s²) at full lean → max lean ≈ 37°
   // rider balance
   yawAssist: 9, yawAssistMax: 900,
@@ -78,6 +80,7 @@ export const BIKE_DEFAULTS = {
   airRollLevel: 9.0, airRollDamp: 4.5,
   // crashes
   crashTilt: 1.2, crashSpeed: 2.5, crashRecover: 1.8,
+  ejectSpeed: 20, ejectImpact: 6.5, ejectTilt: 2.1, ejectPitch: 0.6, ejectRecover: 3.2,   // throw the rider off: see _postStep
   rolloverTilt: 1.75, autoRecoverAfter: null,
 };
 
@@ -106,7 +109,7 @@ export class BikeBody extends TruckBody {
     const p = this.p;
     this.preload = (p.mass * this.world.gravity) / 2 / p.springRate;
     this.tyreRest = ((p.mass / 2 + p.wheelMass) * this.world.gravity) / p.tyreRate;
-    this.crashed = false; this.crashTime = 0; this.lean = 0;
+    this.crashed = false; this.crashTime = 0; this.lean = 0; this.ejected = false;
   }
 
   _forces(h) {
@@ -270,10 +273,19 @@ export class BikeBody extends TruckBody {
     if (!this.crashed) {
       const tilt = this.tilt;
       const down = (this._riderHit > p.crashSpeed) || (this._riderHit > 0 && this.speed > 4) || (tilt > p.crashTilt && (this._touching > 0 || this._hullHits > 0));
-      if (down) { this.crashed = true; this.crashTime = 0; this.onCrash?.(this, Math.max(this._riderHit, this.speed)); }
+      if (down) {
+        // how bad is it? The rider is thrown off when it's extreme: a hard hit on the rider/bike (> 6.5 m/s),
+        // landing upside down, going over the bars (nose down > ~35° at speed), or any crash above ~72 km/h.
+        // An ordinary low-side or tip-over keeps the rider with the bike.
+        const hit = Math.max(this._riderHit, this._hullImpact), sp = this.speed;
+        this.ejected = sp > p.ejectSpeed || hit > p.ejectImpact || (tilt > p.ejectTilt && sp > 4) || (this.pitch < -p.ejectPitch && sp > 9);
+        this.crashed = true; this.crashTime = 0;
+        this.onCrash?.(this, Math.max(this._riderHit, this.speed), { ejected: this.ejected });
+      }
     } else {
       this.crashTime += dt;
-      if (this.crashTime > p.crashRecover && (this.speed < 3 || this.crashTime > p.crashRecover + 2)) { this.recover(0.4); this.onRecover?.(this); }
+      const wait = this.ejected ? p.ejectRecover : p.crashRecover;
+      if (this.crashTime > wait && (this.speed < 3 || this.crashTime > wait + 2)) { this.recover(0.4); this.onRecover?.(this); }
     }
     super._postStep(dt);
   }

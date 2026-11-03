@@ -63,7 +63,9 @@ function geometryFrom(d) {
   return g;
 }
 
-const LODS = [{ n: 128, r: 75 }, { n: 64, r: 170 }, { n: 32, r: 430 }];
+// terrain mesh LODs (vertices per 64 m tile side, radius). Sand detail comes from the shader, so the near mesh can be
+// coarser than the 0.5 m physics grid – about half the triangles of the old 128/64/32 set, and faster to stream.
+const LODS = [{ n: 96, r: 60 }, { n: 48, r: 160 }, { n: 24, r: 430 }];
 
 // ------------------------------------------------------------------ map
 export class DesertMap {
@@ -96,7 +98,7 @@ export class DesertMap {
     const { scene, renderer } = this;
     renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 0.62;
     renderer.outputColorSpace = THREE.SRGBColorSpace;
-    if (shadows) { renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap; }
+    if (shadows) { renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFShadowMap; }   // PCF + radius: soft edges, far cheaper than PCFSoft at 4K
     const sky = new Sky(); sky.scale.setScalar(20000); sky.name = 'Sky';
     const u = sky.material.uniforms;
     u.turbidity.value = 8; u.rayleigh.value = 1.4; u.mieCoefficient.value = 0.006; u.mieDirectionalG.value = 0.82;
@@ -118,7 +120,7 @@ export class DesertMap {
     // sun
     const sun = new THREE.DirectionalLight(this.sunColor, this.sunIntensity);
     sun.castShadow = shadows;
-    sun.shadow.mapSize.set(4096, 4096);
+    sun.shadow.mapSize.set(2048, 2048);
     const S = 95; Object.assign(sun.shadow.camera, { left: -S, right: S, top: S, bottom: -S, near: 1, far: 700 });
     sun.shadow.bias = -0.0004; sun.shadow.normalBias = 0.06; sun.shadow.radius = 2.5;
     this.sun = sun; scene.add(sun); scene.add(sun.target);
@@ -134,7 +136,7 @@ export class DesertMap {
   // ---------------- streaming
   async init(x, z, onProgress) {
     await this.baker.ready;
-    const far = this.far ? Promise.resolve() : new Promise((res) => this.baker.request({ type: 'mesh', x0: -6000, z0: -6000, size: 12000, n: 400, skirt: 0 }, -1, (d) => {
+    const far = this.far ? Promise.resolve() : new Promise((res) => this.baker.request({ type: 'mesh', x0: -6000, z0: -6000, size: 12000, n: 240, skirt: 0 }, -1, (d) => {
       const mesh = new THREE.Mesh(geometryFrom(d), this.farMaterial); mesh.name = 'FarField'; mesh.receiveShadow = false;
       mesh.frustumCulled = false; mesh.renderOrder = -1;
       this.root.add(mesh); this.far = mesh; res();
@@ -358,7 +360,7 @@ export class DesertMap {
       rocks.push([x, T.heightExact(x, z), z, 0.6 + rnd() * 2.6 * (1 - (d - b.r) / 50), rnd() * 6.28]);
     }
     // rock geometry: a lumpy, flattened icosahedron
-    const rg = new THREE.IcosahedronGeometry(1, 2), pa = rg.attributes.position, v = new THREE.Vector3();
+    const rg = new THREE.IcosahedronGeometry(1, 1), pa = rg.attributes.position, v = new THREE.Vector3();
     for (let i = 0; i < pa.count; i++) {
       v.fromBufferAttribute(pa, i);
       const n = 0.75 + 0.35 * Math.sin(v.x * 3.1 + v.y * 1.7) * Math.cos(v.z * 2.3 - v.y) + 0.12 * Math.sin(v.x * 9 + v.z * 7);
@@ -366,24 +368,34 @@ export class DesertMap {
     }
     rg.computeVertexNormals();
     const rockMat = new THREE.MeshStandardMaterial({ color: new THREE.Color().setRGB(0.36, 0.17, 0.09), roughness: 0.9, flatShading: true });
-    const rim = new THREE.InstancedMesh(rg, rockMat, rocks.length);
     const col = new THREE.Color(), m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), e = new THREE.Euler();
-    rocks.forEach(([x, y, z, s, r], i) => {
+    // instances are split into 300 m cells, one InstancedMesh each, so groups off screen (and outside the
+    // shadow box) are culled – a single mesh spanning the whole map was drawn in full every frame, twice
+    const chunked = (geo, mat, items, place, name) => {
+      const cells = new Map(), g = new THREE.Group(); g.name = name;
+      for (const it of items) { const k = Math.floor(it[0] / 300) + ',' + Math.floor(it[2] / 300); if (!cells.has(k)) cells.set(k, []); cells.get(k).push(it); }
+      for (const list of cells.values()) {
+        const im = new THREE.InstancedMesh(geo, mat, list.length);
+        list.forEach((it, i) => place(im, it, i));
+        im.computeBoundingSphere(); g.add(im);
+      }
+      return g;
+    };
+    const rim = chunked(rg, rockMat, rocks, (im, [x, y, z, s, r], i) => {
       m4.compose(new THREE.Vector3(x, y - s * 0.2, z), q.setFromEuler(e.set((rnd() - 0.5) * 0.4, r, (rnd() - 0.5) * 0.4)), new THREE.Vector3(s, s * (0.7 + rnd() * 0.5), s * (0.8 + rnd() * 0.4)));
-      rim.setMatrixAt(i, m4); { const k = 0.75 + rnd() * 0.45; rim.setColorAt(i, col.setRGB(k, k * (0.92 + rnd() * 0.12), k * (0.85 + rnd() * 0.15))); }
-    });
-    rim.castShadow = true; rim.receiveShadow = true; rim.name = 'Rocks';
+      im.setMatrixAt(i, m4); { const k = 0.75 + rnd() * 0.45; im.setColorAt(i, col.setRGB(k, k * (0.92 + rnd() * 0.12), k * (0.85 + rnd() * 0.15))); }
+      im.castShadow = true; im.receiveShadow = true;
+    }, 'Rocks');
     // shrub: a spiky dry tuft – crossed cones of thin twigs as a low-poly ball
     const sg = new THREE.IcosahedronGeometry(1, 1), sp = sg.attributes.position;
     for (let i = 0; i < sp.count; i++) { v.fromBufferAttribute(sp, i); const k = 0.6 + 0.6 * Math.abs(Math.sin(i * 12.9898) * 43758.5453 % 1); v.multiplyScalar(k); v.y = Math.abs(v.y) * 0.8; sp.setXYZ(i, v.x, v.y, v.z); }
     sg.computeVertexNormals();
     const shrubMat = new THREE.MeshStandardMaterial({ color: new THREE.Color().setRGB(0.32, 0.27, 0.16), roughness: 1, flatShading: true });
-    const sim = new THREE.InstancedMesh(sg, shrubMat, shrubs.length);
-    shrubs.forEach(([x, y, z, s, r], i) => {
-      m4.compose(new THREE.Vector3(x, y - 0.05, z), q.setFromEuler(e.set(0, r, 0)), new THREE.Vector3(s, s * 0.8, s)); sim.setMatrixAt(i, m4);
-      sim.setColorAt(i, col.setRGB(0.8 + rnd() * 0.4, 0.8 + rnd() * 0.35, 0.7 + rnd() * 0.3));
-    });
-    sim.castShadow = true; sim.name = 'Shrubs';
+    const sim = chunked(sg, shrubMat, shrubs, (im, [x, y, z, s, r], i) => {
+      m4.compose(new THREE.Vector3(x, y - 0.05, z), q.setFromEuler(e.set(0, r, 0)), new THREE.Vector3(s, s * 0.8, s)); im.setMatrixAt(i, m4);
+      im.setColorAt(i, col.setRGB(0.8 + rnd() * 0.4, 0.8 + rnd() * 0.35, 0.7 + rnd() * 0.3));
+      im.castShadow = true;
+    }, 'Shrubs');
     this.root.add(rim, sim);
     return { rocks: rocks.length, shrubs: shrubs.length };
   }

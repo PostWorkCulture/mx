@@ -27,6 +27,7 @@
   #track .dot.me { top: -4px; width: 9px; height: 9px; margin-left: -4.5px; background: #fff; }
   #msg { top: 15%; left: 0; right: 0; text-align: center; font-size: 13px; opacity: 0; transition: opacity 0.3s; white-space: pre; }
   #big { top: 22%; left: 0; right: 0; text-align: center; font-weight: 200; font-size: min(16vw, 120px); line-height: 1; opacity: 0; transition: opacity 0.2s; }
+  #fps { position: fixed; top: 8px; left: 50%; transform: translateX(-50%); z-index: 7; font: 400 10px/1 "Segoe UI", system-ui, sans-serif; letter-spacing: 0.2em; color: rgba(255,255,255,0.7); text-shadow: var(--shadow); pointer-events: none; font-variant-numeric: tabular-nums; }
   #keys { bottom: 58px; left: 0; right: 0; text-align: center; font-size: 10px; color: var(--dim); opacity: 0; transition: opacity 1s; }
 
   /* ---------- screens (menu / pause / results) ---------- */
@@ -60,6 +61,7 @@
   .row.sel .sub { opacity: 1; }
   #hud.roam #time, #hud.roam #pos, #hud.roam #track { display: none; }
   .hint { position: absolute; right: var(--gut); bottom: max(26px, 5vh); font-size: 10px; color: var(--dim); text-align: right; }
+  .list .row:not(.go) + .row.go { margin-top: 16px; }   /* space between the vehicle options and Roam / Race */
   @media (max-aspect-ratio: 1/1) {
     .shade { background: linear-gradient(0deg, rgba(0,0,0,0.65), rgba(0,0,0,0.2) 55%, rgba(0,0,0,0) 75%); }
     .hint { display: none; }
@@ -81,6 +83,7 @@
 <div id="loading"><div><div class="m">MX</div><div class="b"><i id="lbar"></i></div></div></div>
 <div id="fade"></div>
 
+<div id="fps" style="display:none"></div>
 <div id="hud">
   <div id="time">0:00.00</div>
   <div id="pos"></div>
@@ -88,19 +91,19 @@
   <div id="track"></div>
   <div id="msg" class="caps"></div>
   <div id="big"></div>
-  <div id="keys" class="caps">W / ↑ gas &nbsp;·&nbsp; S / ↓ brake &nbsp;·&nbsp; A D steer &nbsp;·&nbsp; R reset &nbsp;·&nbsp; C camera &nbsp;·&nbsp; Esc pause</div>
+  <div id="keys" class="caps">W / ↑ gas &nbsp;·&nbsp; S / ↓ brake &nbsp;·&nbsp; A D steer / lean &nbsp;·&nbsp; R reset &nbsp;·&nbsp; C camera &nbsp;·&nbsp; Esc pause</div>
 </div>
 
 <div class="screen" id="menu">
   <div class="shade"></div>
   <div class="brand">MX</div>
   <div class="panel"><div class="list" id="mlist"></div></div>
-  <div class="hint caps">↑ ↓ choose &nbsp;·&nbsp; Enter go</div>
+  <div class="hint caps">↑ ↓ choose &nbsp;·&nbsp; ← → change &nbsp;·&nbsp; Enter go</div>
 </div>
 
 <div class="screen" id="pause">
   <div class="shade"></div>
-  <div class="panel"><div class="kicker caps" id="pkick"></div><div class="title">Paused</div><div class="meta caps" style="font-size:10px">W / ↑ gas · S / ↓ brake · A D steer · R reset · C camera</div><div class="list" id="plist"></div></div>
+  <div class="panel"><div class="kicker caps" id="pkick"></div><div class="title">Paused</div><div class="meta caps" style="font-size:10px">W / ↑ gas · S / ↓ brake · A D steer / lean · R reset · C camera<br>bike in the air: W nose up · S nose down</div><div class="list" id="plist"></div></div>
 </div>
 
 <div class="screen" id="results">
@@ -114,6 +117,8 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { TruckWorld } from '../monster_truck/MonsterTruckSim.js';
 import { MonsterTruckRig } from '../monster_truck/MonsterTruckRig.js';
 import { SandFX } from '../monster_truck/SandFX.js';
+import { addBike } from '../dirt_bike/DirtBikeSim.js';
+import { DirtBikeRig } from '../dirt_bike/DirtBikeRig.js';
 import { SPRINT_ROUTES, BUTTES } from './routes.js';
 import { DesertMap } from './DesertMap.js';
 import { SandTracks } from './SandTracks.js';
@@ -126,8 +131,7 @@ const params = new URLSearchParams(location.search);
 const store = { get(k) { try { return JSON.parse(localStorage.getItem('mx.' + k)); } catch { return null; } }, set(k, v) { try { localStorage.setItem('mx.' + k, JSON.stringify(v)); } catch {} } };
 
 // ---------------------------------------------------------------- renderer / scene
-const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance', preserveDrawingBuffer: params.has('capture') });
-renderer.setPixelRatio(Math.min(devicePixelRatio, params.has('capture') ? 1 : 1.5));
+const renderer = new THREE.WebGLRenderer({ antialias: true, stencil: true, powerPreference: 'high-performance', preserveDrawingBuffer: params.has('capture') });
 renderer.setSize(innerWidth, innerHeight);
 document.body.prepend(renderer.domElement);
 const scene = new THREE.Scene();
@@ -139,28 +143,33 @@ const map = new DesertMap({ scene, renderer, terrainOpts: { routes: SPRINT_ROUTE
 const terrain = map.terrain;
 const world = new TruckWorld({ groundHeight: terrain.height, surface: terrain.surface });
 const tracks = new SandTracks(scene, { groundHeight: terrain.height, sunDir: map.sunDir });
+const bikeTracks = new SandTracks(scene, { groundHeight: terrain.height, sunDir: map.sunDir, width: 0.3, spacing: 0.25, maxSegments: 9000 });
 const windSand = new WindSand(scene, { terrain, wind: terrain.wind });
 const sand = new SandFX(scene, { groundHeight: terrain.height, wind: new THREE.Vector3(terrain.wind[0] * 2, 0, terrain.wind[1] * 2) });
 for (const r of terrain.routes) map.addRouteDressing(r, new SprintRace(terrain, r.id).checkpoints);
 map.addScatter();
 for (const c of map.colliders) world.addStaticBox(c);
 
-// ---------------------------------------------------------------- trucks
+// ---------------------------------------------------------------- vehicles: monster trucks or dirt bikes
 const TRUCKS = {
   lime: { name: 'Lime', hero: 'monster_truck_lime_black.glb', lod: 'monster_truck_lime_black_lod1.glb' },
   stealth: { name: 'Stealth', hero: 'monster_truck_stealth_gold.glb', lod: 'monster_truck_stealth_gold_lod1.glb' },
 };
+const BIKE = { hero: 'dirt_bike_white.glb', lod: 'dirt_bike_white_lod1.glb' };
+const KITS = { orange: 'Orange', red: 'Red', lime: 'Lime', blue: 'Blue' };   // rider kits (DirtBikeRig RIDER_KITS)
+const RIVAL_KITS = ['blue', 'yellow', 'purple'];
 const RIVAL_NAMES = ['Dusty', 'Sidewinder', 'Mirage'];
 const loader = new GLTFLoader();
 const glbCache = {};
-const loadGLB = (name) => (glbCache[name] ||= loader.loadAsync('../monster_truck/' + name));
-async function makeTruck(file) {
-  const g = await loadGLB(file);
+const loadGLB = (path) => (glbCache[path] ||= loader.loadAsync(path));
+async function makeVehicle(kind, file, kit) {
+  const g = await loadGLB((kind === 'bike' ? '../dirt_bike/' : '../monster_truck/') + file);
   const obj = g.scene.clone(true);
   obj.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
   scene.add(obj);
-  return { obj, rig: new MonsterTruckRig(obj) };
+  return { obj, rig: kind === 'bike' ? new DirtBikeRig(obj, { kit, groundHeight: terrain.height }) : new MonsterTruckRig(obj) };
 }
+const addBody = (kind, o) => (kind === 'bike' ? addBike(world, o) : world.addTruck(o));
 const dropTruck = (t) => { const i = world.trucks.indexOf(t); if (i >= 0) world.trucks.splice(i, 1); };
 
 // ---------------------------------------------------------------- settings (kept between visits)
@@ -168,9 +177,15 @@ const routeById = (id) => terrain.routes.find((r) => r.id === id) || terrain.rou
 const pick = (v, ok, d) => (ok.includes(v) ? v : d);
 const opts = {
   route: routeById(params.get('route') || store.get('route')).id,
+  vehicle: pick(params.get('vehicle') || (params.get('truck') === 'bike' ? 'bike' : null) || store.get('vehicle'), ['truck', 'bike'], 'truck'),
   truck: pick(params.get('truck') || store.get('truck'), Object.keys(TRUCKS), 'lime'),
+  kit: pick(params.get('kit') || store.get('kit'), Object.keys(KITS), 'orange'),
   rivals: pick(+(params.get('opp') ?? 3), [0, 1, 2, 3], 3),
 };
+// player's ride: { kind, livery, hero file, rider kit }
+const ride = () => (opts.vehicle === 'bike' ? { kind: 'bike', livery: opts.kit, hero: BIKE.hero, kit: opts.kit } : { kind: 'truck', livery: opts.truck, hero: TRUCKS[opts.truck].hero });
+// best times are kept per route and vehicle type
+const bestKey = (routeId, kind = opts.vehicle) => 'best.' + routeId + (kind === 'bike' ? '.bike' : '');
 const nextRoute = (id) => SPRINT_ROUTES[(SPRINT_ROUTES.findIndex((r) => r.id === id) + 1) % SPRINT_ROUTES.length].id;
 
 // ---------------------------------------------------------------- state
@@ -209,7 +224,8 @@ function drawList() {
 function mark() { ui.el.querySelectorAll('.row').forEach((r, i) => r.classList.toggle('sel', i === ui.sel)); }
 function move(d) { ui.sel = (ui.sel + d + ui.rows.length) % ui.rows.length; mark(); }
 function change(d) {
-  const r = ui.rows[ui.sel]; if (!r.values) return;
+  const r = ui.rows[ui.sel];
+  if (!r.values) return;
   const i = r.values.indexOf(r.get());
   r.set(r.values[(i + d + r.values.length) % r.values.length]); drawList();
 }
@@ -217,27 +233,36 @@ function confirm() { const r = ui.rows[ui.sel]; if (r.run) r.run(); else ui.onEn
 function back() { if (state === 'paused') resume(); else if (state === 'results') toMenu(); }
 
 // ---------------------------------------------------------------- menu
-// two choices: Roam (free drive) or Race (next sprint route in rotation, vs rivals)
+// pick your vehicle (monster truck or dirt bike) and its look, then Roam (free drive) or Race (next sprint route, vs rivals)
 const menuRows = [
+  { label: 'Vehicle', values: ['truck', 'bike'], get: () => opts.vehicle, set: (v) => { opts.vehicle = v; store.set('vehicle', v); stage(); }, fmt: (v) => (v === 'bike' ? 'Dirt bike' : 'Monster truck') },
+  { get label() { return opts.vehicle === 'bike' ? 'Rider' : 'Livery'; },
+    get values() { return opts.vehicle === 'bike' ? Object.keys(KITS) : Object.keys(TRUCKS); },
+    get: () => (opts.vehicle === 'bike' ? opts.kit : opts.truck),
+    set: (v) => { if (opts.vehicle === 'bike') { opts.kit = v; store.set('kit', v); } else { opts.truck = v; store.set('truck', v); } stage(); },
+    fmt: (v) => (opts.vehicle === 'bike' ? KITS[v] : TRUCKS[v].name) },
   { label: 'Roam', cls: 'go', sub: () => 'Free drive', run: () => startRoam() },
   { label: 'Race', cls: 'go', sub: () => routeById(opts.route).name, run: () => startRace() },
 ];
-function openMenu() { state = 'menu'; hud(false); screen('menu'); mountList($('mlist'), menuRows, store.get('mode') === 'roam' ? 0 : 1); }
+function openMenu() { state = 'menu'; hud(false); screen('menu'); mountList($('mlist'), menuRows, store.get('mode') === 'roam' ? 2 : 3); }
 
 // showroom: the chosen truck parked on the start grid, slow orbit camera
 let showTok = 0, orbit = 0, snapCam = false;
 async function stage() {
-  const tok = ++showTok, routeId = opts.route, kind = opts.truck;
-  const moving = !show || show.routeId !== routeId;
+  const tok = ++showTok, routeId = opts.route, rd = ride(), kind = rd.kind + ':' + rd.livery;
+  const swapBody = show && show.body !== rd.kind;
+  const moving = !show || show.routeId !== routeId || swapBody;
   if (moving && show) await fadeTo(1);
   if (tok !== showTok) return;
   if (!show || show.kind !== kind) {
-    const m = await makeTruck(TRUCKS[kind].hero);
+    const m = await makeVehicle(rd.kind, rd.hero, rd.kit);
     if (tok !== showTok) { scene.remove(m.obj); return; }
     if (show) scene.remove(show.obj);
-    show = { ...show, obj: m.obj, rig: m.rig, kind };
+    show = { ...show, obj: m.obj, rig: m.rig, kind, bike: rd.kind === 'bike' };
   }
-  show.truck ||= world.addTruck({ x: 0, z: 0 });
+  if (swapBody) { dropTruck(show.truck); show.truck = null; }
+  show.truck ||= addBody(rd.kind, { x: 0, z: 0 });
+  show.body = rd.kind;
   if (moving) {
     const sp = new SprintRace(terrain, routeId).gridSlots(1)[0];
     show.truck.reset({ x: sp.x, z: sp.z, yaw: sp.yaw });
@@ -248,22 +273,27 @@ async function stage() {
   syncVisual(show, 0, false);
   await fadeTo(0);
 }
-function clearShow() { showTok++; if (!show) return; scene.remove(show.obj); dropTruck(show.truck); show = null; }
+function clearShow() { showTok++; if (!show) return; show.rig.release?.(); scene.remove(show.obj); dropTruck(show.truck); show = null; }
 
 // ---------------------------------------------------------------- race
 function clearRace() {
-  for (const rc of racers) { scene.remove(rc.obj); dropTruck(rc.truck); }
-  racers = []; player = null; race = null; tracks.clear(); msg(null); big(null);
+  for (const rc of racers) { rc.rig.release?.(); scene.remove(rc.obj); dropTruck(rc.truck); }
+  racers = []; player = null; race = null; tracks.clear(); bikeTracks.clear(); msg(null); big(null);
 }
 
 function hookFX(truck, isP) {
   truck.onLand = (v) => { if (v > 3) sand.burst(new THREE.Vector3(truck.pos[0], truck.pos[1], truck.pos[2]), v); if (isP && v > 6) shake = Math.min(1, v / 14); };
   truck.onImpact = (other, v, p) => { if (v > 3) sand.burst(new THREE.Vector3(p[0], p[1], p[2]), v * 0.6); if (isP) shake = Math.min(1, v / 12); };
+  // bikes go down; in a big crash the rider is thrown off (ragdoll) and the bike is picked up after a moment
+  truck.onCrash = (b, v, info) => {
+    sand.burst(new THREE.Vector3(b.pos[0], b.pos[1], b.pos[2]), Math.max(4, v) * (info?.ejected ? 1.1 : 0.8));
+    if (isP) { shake = Math.min(1, (info?.ejected ? 0.7 : 0.4) + v / 14); msg(info?.ejected ? 'Thrown off' : 'Crashed', info?.ejected ? 2600 : 1600); }
+  };
 }
 function snapChase(yaw) {
-  const p = player.truck.pos;
-  camPos.set(p[0] - Math.sin(yaw) * 12.5, p[1] + 5.2, p[2] - Math.cos(yaw) * 12.5);
-  camLook.set(p[0] + Math.sin(yaw) * 7, p[1] + 1.6, p[2] + Math.cos(yaw) * 7);
+  const p = player.truck.pos, cv = CAM[player.bike ? 'bike' : 'truck'][0];
+  camPos.set(p[0] - Math.sin(yaw) * cv.dist, p[1] + cv.height, p[2] - Math.cos(yaw) * cv.dist);
+  camLook.set(p[0] + Math.sin(yaw) * cv.ahead, p[1] + cv.look, p[2] + Math.cos(yaw) * cv.ahead);
 }
 function showKeys() {
   const seen = store.get('hints') || 0;
@@ -276,11 +306,11 @@ async function startRoam() {
   state = 'starting'; mode = 'roam'; store.set('mode', 'roam'); screen(null); hud(false); keys.clear();
   await fadeTo(1);
   clearShow(); clearRace();
-  const sp = new SprintRace(terrain, opts.route).gridSlots(1)[0];
-  const { obj, rig } = await makeTruck(TRUCKS[opts.truck].hero);
-  const truck = world.addTruck({ x: sp.x, z: sp.z, yaw: sp.yaw, autoRecoverAfter: 2 });
+  const sp = new SprintRace(terrain, opts.route).gridSlots(1)[0], rd = ride();
+  const { obj, rig } = await makeVehicle(rd.kind, rd.hero, rd.kit);
+  const truck = addBody(rd.kind, { x: sp.x, z: sp.z, yaw: sp.yaw, autoRecoverAfter: 2 });
   hookFX(truck, true);
-  player = { id: 'you', truck, obj, rig, isP: true }; racers = [player];
+  player = { id: 'you', truck, obj, rig, isP: true, bike: rd.kind === 'bike' }; racers = [player];
   await map.init(sp.x, sp.z);
   snapChase(sp.yaw);
   $('hud').classList.add('roam');
@@ -296,16 +326,18 @@ async function startRace(routeId = opts.route) {
   clearShow(); clearRace();
   $('hud').classList.remove('roam');
   race = new SprintRace(terrain, routeId);
-  const route = race.route, n = opts.rivals + 1;
+  const route = race.route, n = opts.rivals + 1, rd = ride(), bike = rd.kind === 'bike';
   const slots = race.gridSlots(n), order = [...slots.keys()].reverse();   // you start at the back: someone to chase
   const rivalKinds = Object.keys(TRUCKS).filter((k) => k !== opts.truck).concat(opts.truck);
   for (let i = 0; i < n; i++) {
     const sl = slots[order[i]], isP = i === 0;
-    const { obj, rig } = await makeTruck(isP ? TRUCKS[opts.truck].hero : TRUCKS[rivalKinds[(i - 1) % rivalKinds.length]].lod);
-    const truck = world.addTruck({ x: sl.x, z: sl.z, yaw: sl.yaw, autoRecoverAfter: 2 });
+    // rivals ride the same kind of vehicle as you
+    const file = isP ? rd.hero : bike ? BIKE.lod : TRUCKS[rivalKinds[(i - 1) % rivalKinds.length]].lod;
+    const { obj, rig } = await makeVehicle(rd.kind, file, isP ? rd.kit : RIVAL_KITS[i - 1]);
+    const truck = addBody(rd.kind, { x: sl.x, z: sl.z, yaw: sl.yaw, autoRecoverAfter: 2 });
     const id = isP ? 'you' : 'ai' + i;
     race.addRacer(id, { name: isP ? 'You' : RIVAL_NAMES[i - 1], player: isP });
-    const rc = { id, truck, obj, rig, isP };
+    const rc = { id, truck, obj, rig, isP, bike };
     if (!isP || params.has('autopilot')) {
       const c = route.pointAt(sl.s), lane = (sl.x - c.x) * c.tz - (sl.z - c.z) * c.tx;
       rc.ai = new SprintAI(race, truck, id, { skill: 0.72 + 0.1 * i, lane, seed: i * 1.7, world });
@@ -319,7 +351,7 @@ async function startRace(routeId = opts.route) {
   $('pos').style.display = n > 1 ? '' : 'none';
   race.onCheckpoint = (r, i, t) => {
     if (!r.player) return;
-    const b = store.get('best.' + route.id), d = b?.splits?.[i] != null ? t - b.splits[i] : null;
+    const b = store.get(bestKey(route.id)), d = b?.splits?.[i] != null ? t - b.splits[i] : null;
     msg(`Checkpoint ${i + 1} / ${race.checkpoints.length}` + (d == null ? '' : `     ${d <= 0 ? '−' : '+'}${Math.abs(d).toFixed(2)}`), 1800);
   };
   race.onMissed = (r) => { if (r.player) msg('Missed checkpoint – go back through it', 3000); };
@@ -362,8 +394,8 @@ async function toMenu() {
 
 function showResults() {
   const route = race.route, tt = route.timeTarget, r = race.racers.get('you'), t = r.time, place = r.place;
-  const best = store.get('best.' + route.id), isBest = !best || t < best.time;
-  if (isBest) store.set('best.' + route.id, { time: t, splits: r.splits });
+  const best = store.get(bestKey(route.id)), isBest = !best || t < best.time;
+  if (isBest) store.set(bestKey(route.id), { time: t, splits: r.splits });
   const medal = t <= tt.gold ? 'Gold' : t <= tt.silver ? 'Silver' : t <= tt.bronze ? 'Bronze' : null;
   const solo = race.racers.size === 1;
   $('rkick').textContent = route.name;
@@ -397,6 +429,7 @@ function updateHUD() {
 // ---------------------------------------------------------------- input: keyboard
 addEventListener('keydown', (e) => {
   const c = e.code;
+  if (c === 'KeyF' && !e.repeat) { rez.show = !rez.show; $('fps').style.display = rez.show ? '' : 'none'; }
   if (state === 'race') {
     keys.add(c);
     if (c === 'KeyC' && !e.repeat) camMode = (camMode + 1) % 3;
@@ -454,34 +487,40 @@ function readInput(dt) {
 }
 
 // ---------------------------------------------------------------- cameras
-const camPos = new THREE.Vector3(), camLook = new THREE.Vector3();
+const camPos = new THREE.Vector3(), camLook = new THREE.Vector3(), _rf = new THREE.Vector3();
+// chase / far / close, per vehicle type (a bike is small: sit closer and lower, follow tighter)
+const CAM = {
+  truck: [{ dist: 12.5, height: 5.2, follow: 4.5, ahead: 7, aheadV: 0.25, look: 1.6, floor: 2.2 }, { dist: 20, height: 8.5, follow: 4.5, ahead: 7, aheadV: 0.25, look: 1.6, floor: 2.2 }, { dist: 7, height: 3.2, follow: 12, ahead: 7, aheadV: 0.25, look: 1.6, floor: 2.2 }],
+  bike: [{ dist: 5.4, height: 2.1, follow: 7, ahead: 3, aheadV: 0.14, look: 1.0, floor: 1.3 }, { dist: 10, height: 4.2, follow: 7, ahead: 3, aheadV: 0.14, look: 1.0, floor: 1.3 }, { dist: 3.4, height: 1.5, follow: 12, ahead: 3, aheadV: 0.14, look: 1.0, floor: 1.3 }],
+};
 function updateCamera(dt) {
   if (window.__mx.freeCam) return;
-  const t = player.truck, p = new THREE.Vector3(...t.rootPosition);
+  const t = player.truck, p = new THREE.Vector3(...t.rootPosition), cv = CAM[player.bike ? 'bike' : 'truck'][camMode];
+  const thrown = player.bike && player.rig.riderFocus?.(_rf);
+  if (thrown) p.lerp(thrown, 0.55);   // rider thrown off: keep both the rider and the bike in shot
   const f = new THREE.Vector3(t.forward[0], 0, t.forward[2]).normalize();
   const vel = new THREE.Vector3(t.vel[0], 0, t.vel[2]);
   if (vel.length() > 4) f.lerp(vel.clone().normalize(), 0.5).normalize();
-  const dist = [12.5, 20, 7][camMode], height = [5.2, 8.5, 3.2][camMode];
-  const want = p.clone().addScaledVector(f, -dist); want.y = p.y + height;
-  const g = terrain.height(want.x, want.z); want.y = Math.max(want.y, g + 2.2);
-  camPos.lerp(want, 1 - Math.exp(-dt * (camMode === 2 ? 12 : 4.5)));
-  camPos.y = Math.max(camPos.y, terrain.height(camPos.x, camPos.z) + 1.6);
-  const look = p.clone().addScaledVector(f, 7 + t.speed * 0.25); look.y = p.y + 1.6;
+  const want = p.clone().addScaledVector(f, -cv.dist * (thrown ? 1.8 : 1)); want.y = p.y + cv.height * (thrown ? 1.7 : 1);
+  const g = terrain.height(want.x, want.z); want.y = Math.max(want.y, g + cv.floor);
+  camPos.lerp(want, 1 - Math.exp(-dt * cv.follow));
+  camPos.y = Math.max(camPos.y, terrain.height(camPos.x, camPos.z) + cv.floor * 0.73);
+  const look = p.clone().addScaledVector(f, cv.ahead + t.speed * cv.aheadV); look.y = p.y + cv.look;
   camLook.lerp(look, 1 - Math.exp(-dt * 8));
   camera.position.copy(camPos);
   if (shake > 0) { camera.position.x += (Math.random() - 0.5) * shake * 0.5; camera.position.y += (Math.random() - 0.5) * shake * 0.5; shake = Math.max(0, shake - dt * 2.5); }
   camera.lookAt(camLook);
-  camera.fov = 60 + Math.min(10, t.speed * 0.35);
+  camera.fov = 60 + Math.min(18, t.speed * 0.36);   // widens with speed (up to 78° flat out) for a sense of pace
 }
 function showroomCamera(dt) {
   if (!show?.truck || window.__mx.freeCam) return;
   orbit += dt * 0.07;
-  const p = show.truck.rootPosition, R = 14 / Math.min(1, camera.aspect * 1.25);   // pull back on tall screens
+  const b = show.bike, p = show.truck.rootPosition, R = (b ? 6.2 : 14) / Math.min(1, camera.aspect * 1.25);   // pull back on tall screens
   const want = new THREE.Vector3(p[0] + Math.sin(orbit) * R, 0, p[2] + Math.cos(orbit) * R);
-  want.y = Math.max(p[1] + 2.6, terrain.height(want.x, want.z) + 1.8);
+  want.y = Math.max(p[1] + (b ? 1.5 : 2.6), terrain.height(want.x, want.z) + (b ? 1.0 : 1.8));
   if (snapCam) { camPos.copy(want); snapCam = false; } else camPos.lerp(want, 1 - Math.exp(-dt * 3));
   camera.position.copy(camPos);
-  camLook.set(p[0], p[1] + 1.4, p[2]);
+  camLook.set(p[0], p[1] + (b ? 0.85 : 1.4), p[2]);
   camera.lookAt(camLook);
   camera.fov = 38;
 }
@@ -508,7 +547,7 @@ function step(h) {
 function syncVisual(rc, dt, fx) {
   const t = rc.truck;
   rc.obj.position.set(...t.rootPosition); rc.obj.quaternion.set(...t.rootQuaternion);
-  rc.rig.update(dt, { speed: t.wheelSpeed, steer: t.steerAngle, suspension: t.travel });
+  rc.rig.update(dt, { speed: t.wheelSpeed, steer: t.steerAngle, suspension: t.travel, bike: rc.bike ? t : null });
   if (!fx) return;
   _f.set(...t.forward); _l.set(...t.left);
   for (const k in t.wheels) {
@@ -517,8 +556,10 @@ function syncVisual(rc, dt, fx) {
     const hub = t.toWorld([wx, t.p.wheelRadius, wz]);
     _c.set(hub[0], terrain.height(hub[0], hub[2]), hub[2]);
     const sf = terrain.surface(hub[0], hub[2]);
-    sand.emitWheel(dt, { id: rc.id + k, contact: _c, forward: _f, left: _l, slipLong: wh.slipLong * (0.4 + 0.6 * sf.soft), slipLat: wh.slipLat * (0.5 + 0.5 * sf.soft), speed: t.speed });
-    tracks.stamp(rc.id + k, hub[0], hub[2], _f.x, _f.z, 0.35 + 0.65 * sf.soft);
+    const fx = rc.bike ? 0.45 : 1;   // a bike's skinny tyres throw far less sand than a truck's
+    sand.emitWheel(dt, { id: rc.id + k, contact: _c, forward: _f, left: _l, slipLong: wh.slipLong * (0.4 + 0.6 * sf.soft) * fx, slipLat: wh.slipLat * (0.5 + 0.5 * sf.soft) * fx, speed: t.speed });
+    if (rc.bike) bikeTracks.stamp(rc.id + k, hub[0], hub[2], _f.x, _f.z, 0.5 + 0.5 * sf.soft);
+    else tracks.stamp(rc.id + k, hub[0], hub[2], _f.x, _f.z, 0.35 + 0.65 * sf.soft);
   }
 }
 let standT = 0;
@@ -534,7 +575,7 @@ function frame(dt) {
   frameCamera();
   if (state !== 'paused') {
     map.update(dt, camera, live.map((r) => r.truck.pos), live.map((r) => r.truck.vel));
-    tracks.update(map.time);
+    tracks.update(map.time); bikeTracks.update(map.time);
     windSand.update(dt, camera, map.gust, renderer);
     sand.update(dt, camera);
   }
@@ -547,15 +588,34 @@ function frame(dt) {
   if (state === 'results' && (standT += dt) > 0.5) { standT = 0; drawStandings(); }
 }
 
+// ---------------------------------------------------------------- frame rate: adaptive resolution
+// The sand shader is per-pixel heavy, so resolution is the big lever: drop it when frames run long, creep back up
+// when there's headroom. F shows the frame rate and render scale.
+const rez = { max: Math.min(devicePixelRatio, 1.5), min: 0.5, cur: 1, sum: 0, n: 0, good: 0, show: false };
+rez.cur = params.has('capture') ? 1 : Math.min(rez.max, 1); renderer.setPixelRatio(rez.cur);
+function adaptResolution(raw) {
+  rez.sum += Math.min(raw, 0.25); rez.n++;
+  if (rez.sum < 1) return;
+  const fps = rez.n / rez.sum; rez.sum = 0; rez.n = 0;
+  if (rez.show) $('fps').textContent = Math.round(fps) + ' fps · ' + Math.round(rez.cur * 100) + '%';
+  if (params.has('capture') || document.hidden) return;
+  let next = rez.cur;
+  if (fps < 50) { next = Math.max(rez.min, rez.cur * (fps < 35 ? 0.8 : 0.9)); rez.good = 0; }
+  else if (fps > 57 && ++rez.good >= 3) { next = Math.min(rez.max, rez.cur * 1.1); rez.good = 0; }   // 3 s of headroom before stepping up
+  if (Math.abs(next - rez.cur) > 0.01) { rez.cur = next; renderer.setPixelRatio(next); }
+}
+
 function loop() {
-  const now = performance.now(), dt = Math.min(0.05, (now - lastTime) / 1000); lastTime = now;
+  // dt is capped at 0.1 s: below 10 fps the game slows down rather than tunnelling through the ground
+  const now = performance.now(), raw = (now - lastTime) / 1000, dt = Math.min(0.1, raw); lastTime = now;
   frame(dt);
   renderer.render(scene, camera);
+  adaptResolution(raw);
   requestAnimationFrame(loop);
 }
 
 // ---------------------------------------------------------------- boot
-window.__mx = { THREE, scene, camera, renderer, map, terrain, world, tracks, windSand, sand, get state() { return state; }, get race() { return race; }, get racers() { return racers; }, startRace, toMenu, frame, SprintRace, opts };
+window.__mx = { THREE, scene, camera, renderer, map, terrain, world, tracks, bikeTracks, windSand, sand, get state() { return state; }, get race() { return race; }, get racers() { return racers; }, startRace, toMenu, frame, SprintRace, opts };
 (async () => {
   const sp = new SprintRace(terrain, opts.route).gridSlots(1)[0];
   await map.init(sp.x, sp.z, (p) => { $('lbar').style.width = (p * 100).toFixed(0) + '%'; });

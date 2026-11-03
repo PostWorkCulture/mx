@@ -49,7 +49,7 @@ export const TRUCK_DEFAULTS = {
   // mass & geometry
   mass: 3900,                         // chassis + body (wheels are separate below)
   inertia: [10500, 12500, 5200],      // about local X (pitch), Y (yaw), Z (roll) through the CG
-  cgHeight: 1.6,                      // CG above the ground at rest (top-heavy: static stability ≈ 0.97 g)
+  cgHeight: 1.25,                     // CG above the ground at rest (game-tuned low so it's hard to tip: static stability ≈ 1.25 g)
   wheelRadius: 0.919,
   wheels: { FL: [1.56, 1.62], FR: [-1.56, 1.62], RL: [1.56, -1.55], RR: [-1.56, -1.55] }, // [x (left +), z]
   wheelMass: 220,
@@ -62,21 +62,22 @@ export const TRUCK_DEFAULTS = {
   tyreMaxForce: 320000,
   tyreBottom: 0.16, tyreBottomRate: 2.5e7, tyreBottomDamp: 60000,   // sidewall/rim bottoming past this deflection (m)
   grip: 0.78, gripSideSat: 1.1,       // μ, and the sideways slip speed (m/s) where grip saturates
-  digIn: 1.2, digInStart: 6, digInFull: 10,   // sliding sideways fast, tyres dig into sand: side grip rises → trips / roll-overs
+  digIn: 0.3, digInStart: 6, digInFull: 10,   // sliding sideways fast, tyres dig into sand: side grip rises → trips / roll-overs (kept mild)
   rollingResistance: 0.02,
   // where tyre forces act on the chassis (m above the contact patch). 0 = raw geometry; higher values
   // model anti-squat / roll-centre geometry and make the truck less tippy. Lower latForceHeight for
   // a truck that rolls more easily in hard turns.
-  longForceHeight: 0.6, latForceHeight: 0.25,
-  antiRoll: 25000,                    // N/m per axle: anti-roll bar between left and right travel
+  longForceHeight: 0.6, latForceHeight: 0.9,
+  antiRoll: 60000,                    // N/m per axle: anti-roll bar between left and right travel
   // drivetrain
-  driveForce: 36000, topSpeed: 26, frontDriveShare: 0.42, brakeForce: 42000,
+  driveForce: 72000, topSpeed: 52, frontDriveShare: 0.42, brakeForce: 55000,   // ~185 km/h flat out
   maxSteer: 0.55, steerSpeedFalloff: 22, steerRate: 2.6,
   // collision hull (truck local frame)
   hullBox: { center: [0, 2.15, -0.05], half: [1.17, 0.85, 2.45] },
   hullStiffness: 380000, hullDamping: 70000, hullFriction: 0.6,
   // air control (driver throttle/brake in the air)
-  airPitchLevel: 3.0, airPitchDamp: 1.6, airPitchTarget: -0.06, airRollLevel: 0.35, airRollDamp: 0.5,
+  airPitchLevel: 3.0, airPitchDamp: 1.6, airPitchTarget: -0.06, airRollLevel: 1.5, airRollDamp: 1.2,
+  airYawAlign: 2.2, airYawDamp: 1.6,   // arcade: in the air the truck swings its nose round to where it's flying, so it lands straight
   // events / recovery
   rolloverTilt: 1.75,                 // rad (~100°) past which onRollover fires
   autoRecoverAfter: null,             // seconds stuck on side / roof before auto recover (null = never)
@@ -259,7 +260,10 @@ export class TruckBody {
       const wl = qMulVec(qConj(this.q), this.w);                // angular velocity in the truck frame
       const tx = (-p.airPitchLevel * (-(pitch - p.airPitchTarget)) - p.airPitchDamp * wl[0]) * p.inertia[0];
       const tz = (-p.airRollLevel * roll - p.airRollDamp * wl[2]) * p.inertia[2];
-      this._T = V.add(this._T, qMulVec(this.q, [tx, 0, tz]));
+      const vl = qMulVec(qConj(this.q), this.vel), vh = Math.hypot(vl[0], vl[2]);
+      const yawErr = vh > 5 && vl[2] > 0 ? clamp(Math.atan2(vl[0], vl[2]), -0.8, 0.8) : 0;   // + = flying off to the left
+      const ty = (p.airYawAlign * yawErr - p.airYawDamp * wl[1]) * p.inertia[1];
+      this._T = V.add(this._T, qMulVec(this.q, [tx, ty, tz]));
     }
   }
 

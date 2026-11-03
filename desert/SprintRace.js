@@ -21,7 +21,7 @@
 const clamp = (x, a, b) => (x < a ? a : x > b ? b : x);
 
 export class SprintRace {
-  constructor(terrain, route, { checkpointEvery = 420, checkpoints = null, startS = 60, finishS = null, countdown = 3, gateSlack = 6 } = {}) {
+  constructor(terrain, route, { checkpointEvery = 420, checkpoints = null, startS = 60, finishS = null, countdown = 3, gateSlack = 10 } = {}) {
     this.terrain = terrain;
     this.route = typeof route === 'object' ? route : terrain.routes.find((r) => r.id === route || r.index === route);
     if (!this.route) throw new Error('SprintRace: unknown route ' + route);
@@ -92,7 +92,7 @@ export class SprintRace {
       const gi = r.next, gs = gates[gi];
       if (prevS < gs && r.s >= gs) {
         const t = (gs - prevS) / Math.max(1e-6, r.s - prevS), dAt = prevD + (r.d - prevD) * t;
-        if (Math.abs(dAt) <= this.gateHalf) {
+        if (Math.abs(dAt) <= this.gateHalf * (gi === gates.length - 1 ? 2.5 : 1)) {   // finish is forgiving: a sideways arrival still counts
           r.missed = -1;
           if (gi === gates.length - 1) {
             r.finished = true; r.time = this.clock;
@@ -190,7 +190,9 @@ export class SprintAI {
     this._air = truck.airborne ? 0.6 : Math.max(0, (this._air || 0) - dt);
     if (this._air > 0) steer *= truck.airborne ? 0 : 0.35;   // straight wheels for the landing
     // corner speed: look 20–140 m ahead for the tightest curvature
-    let vT = 26;
+    // scale with the vehicle's top speed (AI riders hold bikes a bit under flat out: they crash less)
+    const vMax = Math.min(truck.p?.topSpeed ?? 27, truck.kind === 'bike' ? 40 : 1e9) - 1, pace = vMax / 26;
+    let vT = vMax;
     for (let a = 10; a <= 140; a += 10) {
       const k = Math.abs(R.at(R.curv, Math.min(r.s + a, R.length)));
       const vc = Math.sqrt((4.2 + 2.5 * this.skill) / Math.max(k, 1e-4));
@@ -198,16 +200,21 @@ export class SprintAI {
       vT = Math.min(vT, Math.sqrt(vc * vc + 2 * 5.5 * Math.max(0, brakeDist)));
     }
     vT *= 0.82 + 0.18 * this.skill;
-    for (const f of R.features || []) if (f.type === 'whoops' && r.s > f.s0 - 40 && r.s < f.s1) vT = Math.min(vT, 15 + 4 * this.skill);
+    for (const f of R.features || []) if (f.type === 'whoops' && r.s > f.s0 - 40 && r.s < f.s1) vT = Math.min(vT, (15 + 4 * this.skill) * Math.sqrt(pace));
     if (Math.abs(ang) > 0.6) vT = Math.min(vT, 7);
     let throttle = clamp((vT - v) * 0.5 + 0.3, 0, 1), brake = v > vT + 2 ? clamp((v - vT) * 0.25, 0, 1) : 0;
     if (blocked) throttle *= 0.4;
     if (r.finished) { throttle = 0; brake = v > 6 ? 0.25 : 0; }   // cool-down lap: coast, keep steering
     if (truck.airborne) { throttle = 0.3; brake = 0; }
     // unstick: no progress for a while → respawn on the course
-    this._stuck = v < 1.2 && race.state === 'racing' && !r.finished ? this._stuck + dt : 0;
-    if (this._stuck > 3.5 || r.offCourse || (truck.tilt > 1.3 && truck.stuckTime > 2.5)) {
+    const live = race.state === 'racing' && !r.finished;
+    this._stuck = v < 1.2 && live ? this._stuck + dt : 0;
+    // …or circling / wedged without gaining ground, or a gate missed (the AI doesn't turn back for it)
+    if (r.s > (this._bestS ?? -1e9) + 3) { this._bestS = r.s; this._noProg = 0; } else this._noProg = live ? (this._noProg || 0) + dt : 0;
+    this._missT = live && r.missed >= 0 ? (this._missT || 0) + dt : 0;
+    if (this._stuck > 3.5 || this._noProg > 6 || this._missT > 2.5 || r.offCourse || (truck.tilt > 1.3 && truck.stuckTime > 2.5)) {
       const sp = race.respawnPoint(this.id); truck.reset({ x: sp.x, z: sp.z, yaw: sp.yaw }); this._stuck = 0; r._off = 0;
+      this._bestS = sp.s; this._noProg = 0; this._missT = 0; r.missed = -1;   // placed back before the gate it missed
       return;
     }
     truck.input = { throttle, brake, steer };

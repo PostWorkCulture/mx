@@ -54,7 +54,7 @@ if (mode === 'race') {
       const p = R.pointAt(sl.s), lane = (sl.x - p.x) * p.tz - (sl.z - p.z) * p.tx;
       const ai = new SprintAI(race, b, id, { skill: 0.72 + 0.1 * (i + 1), lane, seed: i * 1.7, world });
       const rec = { id, b, ai, crashes: 0, maxLand: 0, resp: 0 };
-      b.onCrash = () => { rec.crashes++; if (rec.crashes <= +(process.env.NC||6)) console.log('    crash', id, 's=' + race.racers.get(id).s.toFixed(0), 'v=' + b.speed.toFixed(1), 'tilt=' + (b.tilt*57.3).toFixed(0), 'roll=' + (b.roll*57.3).toFixed(0), 'pitch=' + (b.pitch*57.3).toFixed(0), 'rider=' + b._riderHit.toFixed(2), 'touch=' + b._touching, 'hull=' + b._hullHits, 'steer=' + b.input.steer.toFixed(2), 'lean=' + (b.lean*57.3).toFixed(0)); }; b.onLand = (v) => rec.maxLand = Math.max(rec.maxLand, v);
+      b.onCrash = (bb, v, info) => { rec.crashes++; if (info?.ejected) rec.ejected = (rec.ejected || 0) + 1; if (rec.crashes <= +(process.env.NC||6)) console.log('    crash', id, 's=' + race.racers.get(id).s.toFixed(0), 'v=' + b.speed.toFixed(1), 'tilt=' + (b.tilt*57.3).toFixed(0), 'roll=' + (b.roll*57.3).toFixed(0), 'pitch=' + (b.pitch*57.3).toFixed(0), 'rider=' + b._riderHit.toFixed(2), 'touch=' + b._touching, 'hull=' + b._hullHits, 'steer=' + b.input.steer.toFixed(2), 'lean=' + (b.lean*57.3).toFixed(0), 'hullImp=' + b._hullImpact.toFixed(1), 'ej=' + (info?.ejected||false)); }; b.onLand = (v) => rec.maxLand = Math.max(rec.maxLand, v);
       rs.push(rec);
     });
     race.start();
@@ -67,6 +67,6 @@ if (mode === 'race') {
       race.update(h, rs.map((r) => ({ id: r.id, pos: r.b.pos, vel: r.b.vel, forward: r.b.forward })));
     }
     console.log(route, 'sim', t.toFixed(0) + 's', 'wall', ((Date.now() - t0) / 1000).toFixed(0) + 's');
-    for (const r of rs) { const rr = race.racers.get(r.id); console.log('  ', r.id, rr.finished ? SprintRace.fmt(rr.time) : 'DNF s=' + rr.s.toFixed(0) + ' next=' + rr.next + '/' + (race.checkpoints.length) + ' missed=' + rr.missed + ' d=' + rr.d.toFixed(1) + ' finishS=' + race.finishS.toFixed(0) + ' v=' + r.b.speed.toFixed(1) + ' crashed=' + r.b.crashed + ' tilt=' + (r.b.tilt*57.3).toFixed(0), 'crashes', r.crashes, 'max landing', r.maxLand.toFixed(1)); }
+    for (const r of rs) { const rr = race.racers.get(r.id); console.log('  ', r.id, rr.finished ? SprintRace.fmt(rr.time) : 'DNF s=' + rr.s.toFixed(0) + ' next=' + rr.next + '/' + (race.checkpoints.length) + ' missed=' + rr.missed + ' d=' + rr.d.toFixed(1) + ' finishS=' + race.finishS.toFixed(0) + ' v=' + r.b.speed.toFixed(1) + ' crashed=' + r.b.crashed + ' tilt=' + (r.b.tilt*57.3).toFixed(0), 'crashes', r.crashes, 'thrown', r.ejected || 0, 'max landing', r.maxLand.toFixed(1)); }
   }
 }
