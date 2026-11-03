@@ -160,8 +160,9 @@ const gpu = (() => {
     discrete: /NVIDIA|GeForce|RTX|GTX|Quadro|Radeon RX|Radeon Pro|Arc A\d|Apple M\d (Pro|Max|Ultra)/i.test(name),
   };
 })();
-// ultra on a dedicated GPU: 4K sun shadows, wider detailed terrain ring, supersampling headroom
-const quality = ['ultra', 'high'].includes(params.get('quality')) ? params.get('quality') : gpu.discrete ? 'ultra' : 'high';
+// 'high' by default on every GPU. ultra (4K sun shadows, wider detailed terrain ring, supersampling headroom) is
+// opt-in with ?quality=ultra – on a gaming laptop it ran at ~20 fps.
+const quality = params.get('quality') === 'ultra' ? 'ultra' : 'high';
 
 const sunElev = +(params.get('sun') || store.get('sun') || 21);
 const map = new DesertMap({ scene, renderer, terrainOpts: { routes: SPRINT_ROUTES, buttes: BUTTES }, sunElevation: sunElev, quality });
@@ -682,7 +683,7 @@ function adaptResolution(raw) {
   rez.sum += Math.min(raw, 0.25); rez.n++;
   if (rez.sum < 1) return;
   const fps = rez.n / rez.sum; rez.sum = 0; rez.n = 0;
-  if (rez.show) $('fps').textContent = Math.round(fps) + ' fps · ' + Math.round(rez.cur / native * 100) + '% · ' + gpu.short + ' · ' + quality;
+  if (rez.show) $('fps').textContent = Math.round(fps) + ' fps · ' + Math.round(rez.cur / native * 100) + '% · ' + gpu.short + ' · ' + quality + ' · L' + perf.level;
   if (params.has('capture') || document.hidden) return;
   let next = rez.cur;
   // after easing down, wait 12 s of clean frames before trying higher again, so it settles instead of see-sawing
@@ -690,7 +691,28 @@ function adaptResolution(raw) {
   else if (fps > 58 && ++rez.good >= 3) { next = Math.min(rez.max, rez.cur * 1.08); rez.good = 0; }   // 3 s of headroom before stepping up
   else if (fps <= 58) rez.good = Math.min(rez.good, 0);
   if (Math.abs(next - rez.cur) > 0.01) setRez(next);
+  // still slow at the lowest render scale: shed one effect every 2 s until it keeps up
+  if (fps < 45 && rez.cur <= rez.min + 0.01 && perf.level < PERF_MAX) {
+    if (++perf.slow >= 2) { setPerfLevel(perf.level + 1); store.set(perfKey, perf.level); perf.slow = 0; }
+  } else perf.slow = 0;
 }
+
+// ---------------------------------------------------------------- frame rate: effect ladder
+// L0 everything · L1 no bloom · L2 no MSAA · L3 half-res sun shadows · L4 render scale may drop to 50 %.
+// The level reached is remembered per GPU (localStorage mx.perf.<gpu>) so the next visit starts there;
+// ?perf=0 resets it.
+const PERF_MAX = 4, perfKey = 'perf.' + gpu.short, perf = { level: 0, slow: 0 };
+function setPerfLevel(l) {
+  perf.level = l;
+  bloom.enabled = l < 1;
+  const samples = l >= 2 ? 0 : 4;
+  for (const rt of [composer.renderTarget1, composer.renderTarget2]) if (rt.samples !== samples) { rt.samples = samples; rt.dispose(); }
+  const sm = (quality === 'ultra' ? 4096 : 2048) / (l >= 3 ? 2 : 1), sh = map.sun.shadow;
+  if (sh.mapSize.x !== sm) { sh.mapSize.set(sm, sm); if (sh.map) { sh.map.dispose(); sh.map = null; } }
+  rez.min = native * (l >= 4 ? 0.5 : 0.7);
+}
+setPerfLevel(Math.max(0, Math.min(PERF_MAX, params.has('perf') ? +params.get('perf') || 0 : +store.get(perfKey) || 0)));
+if (params.has('perf')) store.set(perfKey, perf.level);
 
 function loop() {
   // dt is capped at 0.1 s: below 10 fps the game slows down rather than tunnelling through the ground

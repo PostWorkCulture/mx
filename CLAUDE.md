@@ -30,14 +30,16 @@ Serve the repo root over HTTP (module workers and GLBs don't load from `file://`
   URL: `?roam` or `?route=<id>&vehicle=truck|bike&truck=lime|stealth&kit=orange|red|lime|blue` (old `truck=` links still work).
 
 ## Performance / rendering
-- GPU check at boot (`gpu` in `desert_sprint.html`): a dedicated GPU (NVIDIA / Radeon RX …) gets `quality = 'ultra'`
-  (4096² sun shadow over a 280 m box, terrain LODs 128/64/32 out to 650 m, denser far field, supersampling up to 1.5×);
-  anything else gets `'high'` and the menu/pause screens show how to switch Chrome to the gaming GPU
-  (Windows › Display › Graphics › Chrome › High performance). Force with `?quality=ultra|high`.
+- Quality is `'high'` on every GPU; `?quality=ultra` opts in to ultra (4096² sun shadow over a 280 m box, terrain
+  LODs 128/64/32 out to 650 m, denser far field, supersampling up to 1.5×) – auto-ultra ran ~20 fps on Pete's laptop.
+  The GPU check at boot (`gpu`) only drives the menu/pause notice on how to switch Chrome to the gaming GPU
+  (Windows › Display › Graphics › Chrome › High performance).
+- Effect ladder (`setPerfLevel`): if fps stays < 45 at the lowest render scale, one step every 2 s – L1 no bloom,
+  L2 no MSAA, L3 half-res sun shadow, L4 scale floor 50 %. Remembered per GPU in `mx.perf.<gpu>`; `?perf=N` sets/resets.
 - Post chain: 4× MSAA half-float target (with stencil, for `SandTracks`) → UnrealBloom (clamped, sun/glints only) →
   OutputPass (ACES + exposure) → grade pass (S-curve, warm/cool split, vignette, dither). `render()` draws a frame.
 - Dynamic resolution (`adaptResolution`): starts at native `devicePixelRatio`, eases down to 70 % if fps < 55,
-  climbs back after 3 s of headroom (12 s after a drop). Press F for fps, scale, GPU and quality.
+  climbs back after 3 s of headroom (12 s after a drop). Press F for fps, scale, GPU, quality and ladder level.
 - Vehicles are drawn interpolated between the last two 60 Hz physics states (`lerpA`), so motion is smooth on
   120–165 Hz screens; the chase camera follows the drawn pose. Frame dt is capped at 0.1 s.
 - Shaders are compiled behind the loading screen / fade (`precompile` → `renderer.compileAsync`).
