@@ -71,6 +71,9 @@
   #fade { position: fixed; inset: 0; background: #000; opacity: 1; pointer-events: none; z-index: 8; transition: opacity 0.38s; }
   #loading { position: fixed; inset: 0; z-index: 9; display: grid; place-items: center; background: #000; transition: opacity 0.5s; }
   #loading.off { opacity: 0; pointer-events: none; }
+  #gpu { position: fixed; z-index: 6; top: max(26px, 7vh); right: var(--gut); max-width: 300px; text-align: right; font-size: 11px; line-height: 1.5; color: rgba(255,255,255,0.82); text-shadow: var(--shadow); display: none; pointer-events: none; }
+  #gpu b { display: block; font-weight: 600; color: #fff; letter-spacing: 0.24em; text-transform: uppercase; font-size: 10px; margin-bottom: 4px; }
+  body:has(#menu.on) #gpu, body:has(#pause.on) #gpu { display: block; }
   #loading .m { font-weight: 800; font-size: 26px; letter-spacing: 0.34em; margin-left: 0.34em; text-align: center; }
   #loading .b { width: 160px; height: 1px; background: rgba(255,255,255,0.2); margin-top: 18px; }
   #loading .b i { display: block; height: 100%; width: 0; background: #fff; transition: width 0.2s; }
@@ -114,6 +117,11 @@
 <script type="module">
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { TruckWorld } from '../monster_truck/MonsterTruckSim.js';
 import { MonsterTruckRig } from '../monster_truck/MonsterTruckRig.js';
 import { SandFX } from '../monster_truck/SandFX.js';
@@ -131,15 +139,32 @@ const params = new URLSearchParams(location.search);
 const store = { get(k) { try { return JSON.parse(localStorage.getItem('mx.' + k)); } catch { return null; } }, set(k, v) { try { localStorage.setItem('mx.' + k, JSON.stringify(v)); } catch {} } };
 
 // ---------------------------------------------------------------- renderer / scene
-const renderer = new THREE.WebGLRenderer({ antialias: true, stencil: true, powerPreference: 'high-performance', preserveDrawingBuffer: params.has('capture') });
+// the scene is drawn into a 4× MSAA HDR target and finished by the post chain (bloom → tone map → grade),
+// so the canvas itself needs no antialiasing
+const renderer = new THREE.WebGLRenderer({ antialias: false, stencil: true, powerPreference: 'high-performance', preserveDrawingBuffer: params.has('capture') });
 renderer.setSize(innerWidth, innerHeight);
 document.body.prepend(renderer.domElement);
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(62, innerWidth / innerHeight, 0.3, 14000);
-addEventListener('resize', () => { renderer.setSize(innerWidth, innerHeight); camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); });
+
+// which GPU is the browser drawing on? Gaming laptops often hand the browser the built-in chip
+// (Windows "power saving") instead of the NVIDIA / Radeon RX card – the menu says how to switch.
+const gpu = (() => {
+  const gl = renderer.getContext(), ext = gl.getExtension('WEBGL_debug_renderer_info');
+  const name = String(ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER));
+  const parts = name.startsWith('ANGLE (') ? name.slice(7, -1).split(',') : [name];
+  const short = (parts[1] || parts[0]).replace(/\(0x[0-9a-f]+\)|Direct3D.*|OpenGL.*|Vulkan.*|\((TM|R)\)/gi, '').replace(/\s+/g, ' ').trim();
+  return {
+    name, short,
+    software: /SwiftShader|llvmpipe|softpipe|Software|Basic Render/i.test(name),
+    discrete: /NVIDIA|GeForce|RTX|GTX|Quadro|Radeon RX|Radeon Pro|Arc A\d|Apple M\d (Pro|Max|Ultra)/i.test(name),
+  };
+})();
+// ultra on a dedicated GPU: 4K sun shadows, wider detailed terrain ring, supersampling headroom
+const quality = ['ultra', 'high'].includes(params.get('quality')) ? params.get('quality') : gpu.discrete ? 'ultra' : 'high';
 
 const sunElev = +(params.get('sun') || store.get('sun') || 21);
-const map = new DesertMap({ scene, renderer, terrainOpts: { routes: SPRINT_ROUTES, buttes: BUTTES }, sunElevation: sunElev });
+const map = new DesertMap({ scene, renderer, terrainOpts: { routes: SPRINT_ROUTES, buttes: BUTTES }, sunElevation: sunElev, quality });
 const terrain = map.terrain;
 const world = new TruckWorld({ groundHeight: terrain.height, surface: terrain.surface });
 const tracks = new SandTracks(scene, { groundHeight: terrain.height, sunDir: map.sunDir });
@@ -150,6 +175,45 @@ for (const r of terrain.routes) map.addRouteDressing(r, new SprintRace(terrain, 
 map.addScatter();
 for (const c of map.colliders) world.addStaticBox(c);
 
+// ---------------------------------------------------------------- post: HDR → bloom → filmic tone map → grade
+// HDR target with 4× MSAA and a stencil buffer (tyre tracks use it so overlaps don't stack darker)
+const hdrRT = new THREE.WebGLRenderTarget(innerWidth, innerHeight, { type: THREE.HalfFloatType, samples: 4, stencilBuffer: true });
+const composer = new EffectComposer(renderer, hdrRT);
+composer.addPass(new RenderPass(scene, camera));
+// bloom only on what is truly bright (the sun, its glare in the haze, quartz glints, chrome); the sun disc is
+// thousands of times brighter than the sand, so its contribution is clamped before blurring
+const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.3, 0.6, 1.1);
+bloom.materialHighPassFilter.fragmentShader = bloom.materialHighPassFilter.fragmentShader.replace(
+  'vec4 texel = texture2D( tDiffuse, vUv );', 'vec4 texel = min( texture2D( tDiffuse, vUv ), vec4( 6.0 ) );');
+composer.addPass(bloom);
+composer.addPass(new OutputPass());   // ACES filmic + exposure + sRGB (settings from DesertMap)
+// colour grade in display space: gentle S-curve, warm highlights / cooler shade, a touch of saturation,
+// lens vignette, and ±½ LSB dither so the sky gradient never bands
+const grade = new ShaderPass({
+  uniforms: { tDiffuse: { value: null }, uAspect: { value: innerWidth / innerHeight } },
+  vertexShader: 'varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+  fragmentShader: /* glsl */`
+    uniform sampler2D tDiffuse; uniform float uAspect; varying vec2 vUv;
+    void main() {
+      vec3 c = clamp(texture2D(tDiffuse, vUv).rgb, 0.0, 1.0);
+      c = mix(c, c * c * (3.0 - 2.0 * c), 0.16);
+      float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
+      c += vec3(0.022, 0.008, -0.018) * smoothstep(0.45, 1.0, l) + vec3(-0.012, 0.0, 0.014) * (1.0 - smoothstep(0.0, 0.3, l));
+      c = mix(vec3(l), c, 1.07);
+      vec2 d = (vUv - 0.5) * vec2(uAspect, 1.0);
+      c *= 1.0 - 0.2 * smoothstep(0.4, 1.1, length(d));
+      c += (fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453) - 0.5) / 255.0;
+      gl_FragColor = vec4(c, 1.0);
+    }`,
+});
+composer.addPass(grade);
+function render() { composer.render(); }
+function resize() {
+  renderer.setSize(innerWidth, innerHeight); composer.setSize(innerWidth, innerHeight);
+  camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); grade.uniforms.uAspect.value = camera.aspect;
+}
+addEventListener('resize', resize);
+
 // ---------------------------------------------------------------- vehicles: monster trucks or dirt bikes
 const TRUCKS = {
   lime: { name: 'Lime', hero: 'monster_truck_lime_black.glb', lod: 'monster_truck_lime_black_lod1.glb' },
@@ -159,14 +223,22 @@ const BIKE = { hero: 'dirt_bike_white.glb', lod: 'dirt_bike_white_lod1.glb' };
 const KITS = { orange: 'Orange', red: 'Red', lime: 'Lime', blue: 'Blue' };   // rider kits (DirtBikeRig RIDER_KITS)
 const RIVAL_KITS = ['blue', 'yellow', 'purple'];
 const RIVAL_NAMES = ['Dusty', 'Sidewinder', 'Mirage'];
+const maxAniso = renderer.capabilities.getMaxAnisotropy();
+async function precompile(obj) { try { await renderer.compileAsync(obj, camera, scene); } catch (e) { console.warn('precompile', e); } }
 const loader = new GLTFLoader();
 const glbCache = {};
 const loadGLB = (path) => (glbCache[path] ||= loader.loadAsync(path));
 async function makeVehicle(kind, file, kit) {
   const g = await loadGLB((kind === 'bike' ? '../dirt_bike/' : '../monster_truck/') + file);
   const obj = g.scene.clone(true);
-  obj.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
+  obj.traverse((o) => {
+    if (!o.isMesh) return;
+    o.castShadow = true; o.receiveShadow = true;
+    for (const m of [].concat(o.material)) for (const k of ['map', 'normalMap', 'roughnessMap', 'metalnessMap', 'aoMap', 'emissiveMap'])
+      if (m[k] && m[k].anisotropy !== maxAniso) { m[k].anisotropy = maxAniso; m[k].needsUpdate = true; }   // crisp decals / tread at grazing angles
+  });
   scene.add(obj);
+  await precompile(obj);
   return { obj, rig: kind === 'bike' ? new DirtBikeRig(obj, { kit, groundHeight: terrain.height }) : new MonsterTruckRig(obj) };
 }
 const addBody = (kind, o) => (kind === 'bike' ? addBike(world, o) : world.addTruck(o));
@@ -495,7 +567,7 @@ const CAM = {
 };
 function updateCamera(dt) {
   if (window.__mx.freeCam) return;
-  const t = player.truck, p = new THREE.Vector3(...t.rootPosition), cv = CAM[player.bike ? 'bike' : 'truck'][camMode];
+  const t = player.truck, p = player.obj.position.clone(), cv = CAM[player.bike ? 'bike' : 'truck'][camMode];   // the drawn (interpolated) pose
   const thrown = player.bike && player.rig.riderFocus?.(_rf);
   if (thrown) p.lerp(thrown, 0.55);   // rider thrown off: keep both the rider and the bike in shot
   const f = new THREE.Vector3(t.forward[0], 0, t.forward[2]).normalize();
@@ -544,9 +616,18 @@ function step(h) {
   world.step(h);
   race.update(h, racers.map((rc) => ({ id: rc.id, pos: rc.truck.pos, vel: rc.truck.vel, forward: rc.truck.forward })));
 }
+// Physics runs at a fixed 60 Hz but the screen may refresh at 120 / 144 / 165 Hz. Drawing the latest physics
+// state would show some poses twice and skip others (judder), so every vehicle is drawn between its last two
+// physics states, by how far the clock has got into the next step (lerp = acc / h).
+let lerpA = 1;
+const _ip = new THREE.Vector3(), _iq = new THREE.Quaternion();
+function keepPrev(list) { for (const rc of list) { rc.prevP = rc.truck.rootPosition; rc.prevQ = rc.truck.rootQuaternion; } }
 function syncVisual(rc, dt, fx) {
-  const t = rc.truck;
-  rc.obj.position.set(...t.rootPosition); rc.obj.quaternion.set(...t.rootQuaternion);
+  const t = rc.truck, P = t.rootPosition, Q = t.rootQuaternion, pp = rc.prevP;
+  if (pp && lerpA < 1 && (pp[0] - P[0]) ** 2 + (pp[1] - P[1]) ** 2 + (pp[2] - P[2]) ** 2 < 25) {   // not across a reset / teleport
+    rc.obj.position.set(pp[0], pp[1], pp[2]).lerp(_ip.set(P[0], P[1], P[2]), lerpA);
+    rc.obj.quaternion.set(rc.prevQ[0], rc.prevQ[1], rc.prevQ[2], rc.prevQ[3]).slerp(_iq.set(Q[0], Q[1], Q[2], Q[3]), lerpA);
+  } else { rc.obj.position.set(P[0], P[1], P[2]); rc.obj.quaternion.set(Q[0], Q[1], Q[2], Q[3]); }
   rc.rig.update(dt, { speed: t.wheelSpeed, steer: t.steerAngle, suspension: t.travel, bike: rc.bike ? t : null });
   if (!fx) return;
   _f.set(...t.forward); _l.set(...t.left);
@@ -565,11 +646,12 @@ function syncVisual(rc, dt, fx) {
 let standT = 0;
 function frame(dt) {
   pollPad(dt);
+  const live = state === 'menu' ? (show ? [show] : []) : racers;
   if (state === 'menu' || state === 'race' || state === 'results') {
     const h = 1 / 60; acc = Math.min(acc + dt, 0.1);
-    while (acc >= h) { step(h); acc -= h; }
-  }
-  const live = state === 'menu' ? (show ? [show] : []) : racers;
+    while (acc >= h) { keepPrev(live); step(h); acc -= h; }
+    lerpA = acc / h;
+  } else lerpA = 1;
   if (state === 'menu') { if (show) syncVisual(show, dt, false); showroomCamera(dt); }
   else if (player && state !== 'starting') { for (const rc of racers) syncVisual(rc, state === 'paused' ? 0 : dt, state !== 'paused'); updateCamera(state === 'paused' ? 0 : dt); }
   frameCamera();
@@ -588,38 +670,53 @@ function frame(dt) {
   if (state === 'results' && (standT += dt) > 0.5) { standT = 0; drawStandings(); }
 }
 
-// ---------------------------------------------------------------- frame rate: adaptive resolution
-// The sand shader is per-pixel heavy, so resolution is the big lever: drop it when frames run long, creep back up
-// when there's headroom. F shows the frame rate and render scale.
-const rez = { max: Math.min(devicePixelRatio, 1.5), min: 0.5, cur: 1, sum: 0, n: 0, good: 0, show: false };
-rez.cur = params.has('capture') ? 1 : Math.min(rez.max, 1); renderer.setPixelRatio(rez.cur);
+// ---------------------------------------------------------------- frame rate: dynamic resolution
+// Renders at the screen's native resolution (and supersamples above it on a dedicated GPU when there is
+// headroom). If a frame runs long the render scale eases down a step, then climbs back once there is room,
+// so motion stays fluid. F shows the frame rate, render scale and GPU.
+const native = devicePixelRatio || 1;
+const rez = { max: quality === 'ultra' ? Math.min(2, native * 1.5) : native, min: native * 0.7, cur: native, sum: 0, n: 0, good: 0, show: false };
+function setRez(v) { rez.cur = v; renderer.setPixelRatio(v); composer.setPixelRatio(v); }
+setRez(params.has('capture') ? 1 : native);
 function adaptResolution(raw) {
   rez.sum += Math.min(raw, 0.25); rez.n++;
   if (rez.sum < 1) return;
   const fps = rez.n / rez.sum; rez.sum = 0; rez.n = 0;
-  if (rez.show) $('fps').textContent = Math.round(fps) + ' fps · ' + Math.round(rez.cur * 100) + '%';
+  if (rez.show) $('fps').textContent = Math.round(fps) + ' fps · ' + Math.round(rez.cur / native * 100) + '% · ' + gpu.short + ' · ' + quality;
   if (params.has('capture') || document.hidden) return;
   let next = rez.cur;
-  if (fps < 50) { next = Math.max(rez.min, rez.cur * (fps < 35 ? 0.8 : 0.9)); rez.good = 0; }
-  else if (fps > 57 && ++rez.good >= 3) { next = Math.min(rez.max, rez.cur * 1.1); rez.good = 0; }   // 3 s of headroom before stepping up
-  if (Math.abs(next - rez.cur) > 0.01) { rez.cur = next; renderer.setPixelRatio(next); }
+  // after easing down, wait 12 s of clean frames before trying higher again, so it settles instead of see-sawing
+  if (fps < 55) { next = Math.max(rez.min, rez.cur * (fps < 40 ? 0.85 : 0.93)); rez.good = -9; }
+  else if (fps > 58 && ++rez.good >= 3) { next = Math.min(rez.max, rez.cur * 1.08); rez.good = 0; }   // 3 s of headroom before stepping up
+  else if (fps <= 58) rez.good = Math.min(rez.good, 0);
+  if (Math.abs(next - rez.cur) > 0.01) setRez(next);
 }
 
 function loop() {
   // dt is capped at 0.1 s: below 10 fps the game slows down rather than tunnelling through the ground
   const now = performance.now(), raw = (now - lastTime) / 1000, dt = Math.min(0.1, raw); lastTime = now;
   frame(dt);
-  renderer.render(scene, camera);
+  render();
   adaptResolution(raw);
   requestAnimationFrame(loop);
 }
 
+// ---------------------------------------------------------------- GPU notice (menu + pause)
+if (!gpu.discrete) {
+  const el = document.createElement('div'); el.id = 'gpu';
+  el.innerHTML = gpu.software
+    ? `<b>Graphics acceleration is off</b>Chrome is drawing MX without the GPU. Chrome › Settings › System › turn on “Use graphics acceleration when available”, then Relaunch.`
+    : `<b>Running on ${gpu.short}</b>That's the laptop's built-in graphics chip, not its gaming GPU. Windows Settings › System › Display › Graphics › Google Chrome › Options › High performance (NVIDIA), then close and reopen Chrome.`;
+  document.body.append(el);
+}
+
 // ---------------------------------------------------------------- boot
-window.__mx = { THREE, scene, camera, renderer, map, terrain, world, tracks, bikeTracks, windSand, sand, get state() { return state; }, get race() { return race; }, get racers() { return racers; }, startRace, toMenu, frame, SprintRace, opts };
+window.__mx = { THREE, scene, camera, renderer, composer, render, gpu, quality, rez, map, terrain, world, tracks, bikeTracks, windSand, sand, get state() { return state; }, get race() { return race; }, get racers() { return racers; }, startRace, toMenu, frame, SprintRace, opts };
 (async () => {
   const sp = new SprintRace(terrain, opts.route).gridSlots(1)[0];
   await map.init(sp.x, sp.z, (p) => { $('lbar').style.width = (p * 100).toFixed(0) + '%'; });
   camera.position.set(sp.x - 20, terrain.height(sp.x, sp.z) + 12, sp.z - 20); camera.lookAt(sp.x, 0, sp.z);
+  await precompile(scene);   // build every shader now, behind the loading screen, not as a stutter on the first frames
   $('loading').classList.add('off');
   if (!params.has('manual')) loop();
   if (params.has('roam')) startRoam();                                  // ?roam jumps straight into free drive

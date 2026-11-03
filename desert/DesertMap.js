@@ -66,6 +66,9 @@ function geometryFrom(d) {
 // terrain mesh LODs (vertices per 64 m tile side, radius). Sand detail comes from the shader, so the near mesh can be
 // coarser than the 0.5 m physics grid – about half the triangles of the old 128/64/32 set, and faster to stream.
 const LODS = [{ n: 96, r: 60 }, { n: 48, r: 160 }, { n: 24, r: 430 }];
+// ultra (dedicated GPU): the finest mesh reaches half as far again and the detailed ring runs to ~650 m, so
+// dune shapes stay crisp toward the horizon instead of melting into the far field
+const LODS_ULTRA = [{ n: 128, r: 90 }, { n: 64, r: 250 }, { n: 32, r: 650 }];
 
 // ------------------------------------------------------------------ map
 export class DesertMap {
@@ -79,16 +82,17 @@ export class DesertMap {
     this.colliders = [];
     this.wind = this.terrain.wind; this.windSpeed = 8; this.gust = 0.5; this.time = 0;
     this.quality = quality;
+    this.lods = quality === 'ultra' ? LODS_ULTRA : LODS;
     // sun direction (toward the sun): azimuth measured from +Z toward +X (°), elevation above horizon
     const el = THREE.MathUtils.degToRad(sunElevation), az = THREE.MathUtils.degToRad(sunAzimuth);
     this.sunDir = new THREE.Vector3(Math.sin(az) * Math.cos(el), Math.sin(el), Math.cos(az) * Math.cos(el)).normalize();
     // sun colour / strength by elevation: deep orange near the horizon → warm white at midday
     const k = THREE.MathUtils.clamp((sunElevation - 4) / 40, 0, 1);
     this.sunColor = new THREE.Color().setRGB(1.0, 0.62 + 0.34 * Math.sqrt(k), 0.36 + 0.54 * k);
-    this.sunIntensity = 2.6 + 2.0 * Math.sqrt(k);
+    this.sunIntensity = 3.0 + 2.3 * Math.sqrt(k);   // hard desert sun: strong light / shade modelling on the dunes
     this.sunElevation = sunElevation;
     this.material = createSandMaterial({ sunDir: this.sunDir, sunColor: this.sunColor, wind: this.wind });
-    this.farMaterial = createSandMaterial({ sunDir: this.sunDir, sunColor: this.sunColor, wind: this.wind, farField: true, nearRadius: LODS[2].r - 30 });
+    this.farMaterial = createSandMaterial({ sunDir: this.sunDir, sunColor: this.sunColor, wind: this.wind, farField: true, nearRadius: this.lods[2].r - 30 });
     this._buildAtmosphere(shadows);
     this._physPending = new Set();
   }
@@ -120,14 +124,16 @@ export class DesertMap {
     // sun
     const sun = new THREE.DirectionalLight(this.sunColor, this.sunIntensity);
     sun.castShadow = shadows;
-    sun.shadow.mapSize.set(2048, 2048);
-    const S = 95; Object.assign(sun.shadow.camera, { left: -S, right: S, top: S, bottom: -S, near: 1, far: 700 });
+    // ultra: 4096² over a wider box – sharper contact shadows under the trucks and shadows that reach further out
+    const ultra = this.quality === 'ultra';
+    sun.shadow.mapSize.set(ultra ? 4096 : 2048, ultra ? 4096 : 2048);
+    const S = ultra ? 140 : 95; Object.assign(sun.shadow.camera, { left: -S, right: S, top: S, bottom: -S, near: 1, far: 700 });
     sun.shadow.bias = -0.0004; sun.shadow.normalBias = 0.06; sun.shadow.radius = 2.5;
     this.sun = sun; scene.add(sun); scene.add(sun.target);
     // haze matched to the horizon
     const kk = THREE.MathUtils.clamp((this.sunElevation - 4) / 40, 0, 1);
     const haze = new THREE.Color().setRGB(0.86 - 0.06 * kk, 0.66 + 0.06 * kk, 0.48 + 0.14 * kk, THREE.SRGBColorSpace);
-    scene.environmentIntensity = 0.5 + 0.3 * kk;
+    scene.environmentIntensity = 0.42 + 0.25 * kk;
     renderer.toneMappingExposure = 0.55 + 0.1 * kk;
     scene.fog = new THREE.FogExp2(haze, 0.00032);
     this.haze = haze;
@@ -136,7 +142,7 @@ export class DesertMap {
   // ---------------- streaming
   async init(x, z, onProgress) {
     await this.baker.ready;
-    const far = this.far ? Promise.resolve() : new Promise((res) => this.baker.request({ type: 'mesh', x0: -6000, z0: -6000, size: 12000, n: 240, skirt: 0 }, -1, (d) => {
+    const far = this.far ? Promise.resolve() : new Promise((res) => this.baker.request({ type: 'mesh', x0: -6000, z0: -6000, size: 12000, n: this.quality === 'ultra' ? 400 : 240, skirt: 0 }, -1, (d) => {
       const mesh = new THREE.Mesh(geometryFrom(d), this.farMaterial); mesh.name = 'FarField'; mesh.receiveShadow = false;
       mesh.frustumCulled = false; mesh.renderOrder = -1;
       this.root.add(mesh); this.far = mesh; res();
@@ -154,8 +160,8 @@ export class DesertMap {
     onProgress?.(1);
   }
 
-  prefetchPhysics(x, z, radius = 100, vx = 0, vz = 0) {
-    const cx = x + vx * 2, cz = z + vz * 2;
+  prefetchPhysics(x, z, radius = 100, vx = 0, vz = 0, lead = 2) {
+    const cx = x + vx * lead, cz = z + vz * lead;
     const r = Math.ceil(radius / TILE), ix0 = Math.floor(cx / TILE), iz0 = Math.floor(cz / TILE);
     for (let a = -r; a <= r; a++) for (let b = -r; b <= r; b++) {
       const ix = ix0 + a, iz = iz0 + b, key = ix + ',' + iz;
@@ -173,7 +179,7 @@ export class DesertMap {
   }
 
   _updateTiles(cam, force = false) {
-    const maxR = LODS[LODS.length - 1].r;
+    const LODS = this.lods, maxR = LODS[LODS.length - 1].r;
     const r = Math.ceil(maxR / TILE) + 1, ix0 = Math.floor(cam.x / TILE), iz0 = Math.floor(cam.z / TILE);
     const want = new Map();
     for (let a = -r; a <= r; a++) for (let b = -r; b <= r; b++) {
@@ -221,7 +227,7 @@ export class DesertMap {
     const c = camera.position;
     if (!this._lastCam || this._lastCam.distanceToSquared(c) > 64) { this._updateTiles(c); (this._lastCam ||= new THREE.Vector3()).copy(c); }
     // physics tiles around every truck, leading their motion
-    focus.forEach((p, i) => { const v = vels[i] || [0, 0, 0]; this.prefetchPhysics(p[0], p[2], 90, v[0], v[2]); });
+    focus.forEach((p, i) => { const v = vels[i] || [0, 0, 0]; this.prefetchPhysics(p[0], p[2], 120, v[0], v[2], 2.5); });   // well ahead of a flat-out truck, so physics never waits on a bake
     // sun + shadow box follow the camera's look point, snapped to shadow texels to stop shimmering
     const target = focus[0] ? new THREE.Vector3(focus[0][0], focus[0][1], focus[0][2]) : c;
     const S = this.sun.shadow.camera.right * 2 / this.sun.shadow.mapSize.x;

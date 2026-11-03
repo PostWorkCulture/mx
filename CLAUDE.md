@@ -29,12 +29,21 @@ Serve the repo root over HTTP (module workers and GLBs don't load from `file://`
   vehicle type. Best times are stored per route and vehicle (`mx.best.<route>` for trucks, `mx.best.<route>.bike`).
   URL: `?roam` or `?route=<id>&vehicle=truck|bike&truck=lime|stealth&kit=orange|red|lime|blue` (old `truck=` links still work).
 
-## Performance
-- Render scale adapts to frame rate (`adaptResolution` in `desert_sprint.html`, 50–150 % of the window); press F in game to
-  show fps and scale. The sand shader is fill-rate heavy, so resolution is the main lever.
-- Physics runs at a fixed 60 Hz; frame dt is capped at 0.1 s (below 10 fps the game slows rather than tunnelling).
-- Keep the scene lean: terrain LODs 96/48/24 per 64 m tile, 2048 PCF sun shadow, scatter split into 300 m instanced
-  chunks so it culls. Trucks are the biggest remaining cost (hero 218k tris, LOD1 80k).
+## Performance / rendering
+- GPU check at boot (`gpu` in `desert_sprint.html`): a dedicated GPU (NVIDIA / Radeon RX …) gets `quality = 'ultra'`
+  (4096² sun shadow over a 280 m box, terrain LODs 128/64/32 out to 650 m, denser far field, supersampling up to 1.5×);
+  anything else gets `'high'` and the menu/pause screens show how to switch Chrome to the gaming GPU
+  (Windows › Display › Graphics › Chrome › High performance). Force with `?quality=ultra|high`.
+- Post chain: 4× MSAA half-float target (with stencil, for `SandTracks`) → UnrealBloom (clamped, sun/glints only) →
+  OutputPass (ACES + exposure) → grade pass (S-curve, warm/cool split, vignette, dither). `render()` draws a frame.
+- Dynamic resolution (`adaptResolution`): starts at native `devicePixelRatio`, eases down to 70 % if fps < 55,
+  climbs back after 3 s of headroom (12 s after a drop). Press F for fps, scale, GPU and quality.
+- Vehicles are drawn interpolated between the last two 60 Hz physics states (`lerpA`), so motion is smooth on
+  120–165 Hz screens; the chase camera follows the drawn pose. Frame dt is capped at 0.1 s.
+- Shaders are compiled behind the loading screen / fade (`precompile` → `renderer.compileAsync`).
+- Sand shader: ripples use analytic gradients (`rippleHG`), and each surface's colour is only evaluated where its
+  mask is present – about 2.2× cheaper than the old 3-sample version for the same look.
+- Physics tiles are prefetched 120 m around each vehicle, 2.5 s ahead of its motion.
 
 ## Assets
 - Only runtime assets go in the repo (each GLB ≲ 15 MB; no Git LFS – GitHub Pages can't serve LFS files).
