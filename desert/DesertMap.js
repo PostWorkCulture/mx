@@ -280,9 +280,14 @@ export class DesertMap {
   _bannerTexture(label, color, checkered) {
     const c = document.createElement('canvas'); c.width = 1024; c.height = 128;
     const x = c.getContext('2d');
-    if (checkered) { for (let i = 0; i < 64; i++) for (let j = 0; j < 8; j++) { x.fillStyle = (i + j) & 1 ? '#111' : '#f4f1ea'; x.fillRect(i * 16, j * 16, 16, 16); } x.fillStyle = 'rgba(17,17,17,0.85)'; x.fillRect(300, 14, 424, 100); }
-    else { x.fillStyle = '#' + color.getHexString(); x.fillRect(0, 0, 1024, 128); x.fillStyle = '#111'; x.fillRect(0, 0, 1024, 10); x.fillRect(0, 118, 1024, 10); }
-    x.fillStyle = checkered ? '#f4f1ea' : '#111'; x.font = '900 84px system-ui, Arial Black, sans-serif'; x.textAlign = 'center'; x.textBaseline = 'middle';
+    // Black-and-white race dressing: START is a black banner with white text, FINISH a chequered flag.
+    if (checkered) {
+      for (let i = 0; i < 32; i++) for (let j = 0; j < 4; j++) { x.fillStyle = (i + j) & 1 ? '#0a0a0a' : '#f5f5f5'; x.fillRect(i * 32, j * 32, 32, 32); }
+      x.fillStyle = '#0a0a0a'; x.fillRect(304, 16, 416, 96); x.strokeStyle = '#f5f5f5'; x.lineWidth = 4; x.strokeRect(310, 22, 404, 84);
+    } else {
+      x.fillStyle = '#0a0a0a'; x.fillRect(0, 0, 1024, 128); x.fillStyle = '#f5f5f5'; x.fillRect(0, 10, 1024, 4); x.fillRect(0, 114, 1024, 4);
+    }
+    x.fillStyle = '#f5f5f5'; x.font = '900 84px system-ui, Arial Black, sans-serif'; x.textAlign = 'center'; x.textBaseline = 'middle';
     x.fillText(label, 512, 68);
     const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 8; return t;
   }
